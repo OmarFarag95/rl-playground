@@ -8,9 +8,10 @@ from torch import nn
 
 from .envs import GAMES
 from .formula import compile_formula
-from .nets import MLP, Policy, clean_spec, param_count, snapshot
+from .nets import MLP, Policy, clean_spec, export, param_count, snapshot
+from .vec import make_envs
 
-ALGOS = ("ppo", "reinforce", "es")
+ALGOS = ("ppo", "grpo", "reinforce", "es")
 
 DEFAULT_HP = {
     "episodes": 32,        # episodes per iteration (population size for ES)
@@ -28,14 +29,17 @@ DEFAULT_HP = {
     "baseline": True,      # REINFORCE: subtract the value net's estimate
     "sigma": 0.05,         # ES: weight noise
     "norm_reward": True,   # scale rewards by their running mean and std
+    "group": 8,            # GRPO: episodes per group, all playing the same situation
+    "beta": 0.02,          # GRPO: KL penalty towards the policy that played the batch
 }
-ALGO_LR = {"ppo": 3e-4, "reinforce": 1e-3, "es": 0.03}
-HP_LIMITS = {"episodes": (2, 512), "epochs": (1, 50), "minibatch": (8, 8192)}
+ALGO_LR = {"ppo": 3e-4, "grpo": 3e-4, "reinforce": 1e-3, "es": 0.03}
+HP_LIMITS = {"episodes": (2, 512), "epochs": (1, 50), "minibatch": (8, 8192), "group": (2, 64)}
 
 
-def clean_hp(hp, algo):
+def clean_hp(hp, algo, game_defaults=None):
     out = dict(DEFAULT_HP)
     out["lr"] = ALGO_LR[algo]
+    out.update(game_defaults or {})  # a game can suggest its own starting values
     for k, v in (hp or {}).items():
         if k not in DEFAULT_HP:
             continue
@@ -46,6 +50,9 @@ def clean_hp(hp, algo):
         out[k] = v
     if algo == "es":
         out["episodes"] += out["episodes"] % 2  # antithetic pairs
+    if algo == "grpo":
+        g = out["group"]
+        out["episodes"] = max(g, -(-out["episodes"] // g) * g)  # whole groups only
     return out
 
 
@@ -66,10 +73,11 @@ class RunningStat:
 
 
 class Episode:
-    __slots__ = ("obs", "act", "logp", "metrics", "reward", "replay")
+    __slots__ = ("obs", "act", "logp", "rews", "metrics", "reward", "replay")
 
     def __init__(self):
         self.obs, self.act, self.logp = [], [], []
+        self.rews = None  # per-step rewards, for games scored at every step
 
 
 class Trainer:
@@ -80,7 +88,7 @@ class Trainer:
             raise ValueError(f"Unknown algorithm {algo!r}.")
         self.game = game
         self.Env = GAMES[game]
-        self.envs = []
+        self.envs = None  # created on first use, so a trainer that never trains starts no workers
         probe = self.Env()
         self.obs_dim, self.act_dim = probe.obs_dim, probe.act_dim
         self.net = {"policy": clean_spec(net.get("policy")),
@@ -92,7 +100,7 @@ class Trainer:
         self.rng = np.random.default_rng(self.seed)
         torch.manual_seed(self.seed)
         self.algo = algo
-        self.hp = clean_hp(hp, algo)
+        self.hp = clean_hp(hp, algo, getattr(self.Env, 'hp', None))
         self.policy = Policy(self.obs_dim, self.act_dim, self.net["policy"], self.hp["log_std"])
         self.set_formula(formula)
         self.set_settings(settings)
@@ -114,15 +122,15 @@ class Trainer:
     def set_settings(self, settings):
         """Change the scene (board height, gravity, ...). The policy keeps what it has learned."""
         self.settings = self.Env.clean_settings({**getattr(self, "settings", {}), **(settings or {})})
-        for env in self.envs:
-            env.configure(self.settings)
+        if self.envs is not None:
+            self.envs.configure(self.settings)
 
     def set_algo(self, algo, hp):
         """Switch algorithm or settings. The policy keeps what it has learned."""
         if algo not in ALGOS:
             raise ValueError(f"Unknown algorithm {algo!r}.")
         old = (self.algo, self.hp["log_std"])
-        self.hp = clean_hp(hp, algo)
+        self.hp = clean_hp(hp, algo, getattr(self.Env, 'hp', None))
         if algo != self.algo:
             self.algo = algo
             self._build_learner()
@@ -139,6 +147,8 @@ class Trainer:
             self.value = MLP(self.obs_dim, 1, self.net["value"], out_gain=1.0)
             params = list(self.policy.parameters()) + list(self.value.parameters())
             self.opt = torch.optim.Adam(params, lr=self.hp["lr"], eps=1e-5)
+        elif self.algo == "grpo":  # no critic: the group average is the baseline
+            self.opt = torch.optim.Adam(self.policy.parameters(), lr=self.hp["lr"], eps=1e-5)
         else:
             self.opt = torch.optim.Adam(self.policy.mu.parameters(), lr=self.hp["lr"])
 
@@ -156,17 +166,24 @@ class Trainer:
     def rollout(self, n, deterministic=False, mus=None, seeds=None, progress=None):
         """Play ``n`` episodes in lockstep. ``mus`` gives one network per episode (used by ES).
         ``progress(phase, done, total)`` is called as episodes finish."""
-        while len(self.envs) < n:
-            env = self.Env()
-            env.configure(self.settings)
-            self.envs.append(env)
+        if self.envs is None:
+            self.envs = make_envs(self.Env, self.settings)
+        if seeds is None:
+            seeds = [int(x) for x in self.rng.integers(2**63 - 1, size=n)]
+        if hasattr(self.envs, "run"):
+            return self._rollout_pool(n, deterministic, mus, seeds, progress)
         eps = [Episode() for _ in range(n)]
-        obs = []
-        for i in range(n):
-            rng = np.random.default_rng(seeds[i]) if seeds is not None else self.rng
-            obs.append(self.envs[i].reset(rng))
+        started = self.envs.reset(seeds)
+        obs = [o for o, _ in started]
         active = list(range(n))
         finished = 0
+        # Games marked ``dense`` report their metrics at every step. Each step then earns the change in
+        # the formula's value, so an episode's step rewards add up to exactly its end-of-episode reward.
+        dense = getattr(self.Env, "dense", False)
+        prev = [self._value(m) for _, m in started] if dense else None
+        if dense:
+            for e in eps:
+                e.rews = []
         while active:
             o = torch.as_tensor(np.stack([obs[i] for i in active]))
             with torch.no_grad():
@@ -176,18 +193,22 @@ class Trainer:
                     a = torch.cat([mus[i](o[k:k + 1]) for k, i in enumerate(active)])
                     logp = torch.zeros(len(active))
             a_np = a.numpy()
+            results = self.envs.step([(i, np.clip(a_np[k], -1, 1)) for k, i in enumerate(active)])
             still = []
-            for k, i in enumerate(active):
+            for k, (i, (ob, done, m, rep)) in enumerate(zip(active, results)):
                 e = eps[i]
                 e.obs.append(obs[i])
                 e.act.append(a_np[k])
                 e.logp.append(float(logp[k]))
-                obs[i], done = self.envs[i].step(np.clip(a_np[k], -1, 1))
+                obs[i] = ob
+                if dense:
+                    cur = self._value(m)
+                    e.rews.append(cur - prev[i])
+                    prev[i] = cur
                 if done:
-                    env = self.envs[i]
-                    e.metrics = env.metrics()
-                    e.reward = self._reward(e.metrics)
-                    e.replay = env.replay()
+                    e.metrics = m
+                    e.reward = self._reward(m)
+                    e.replay = rep
                     finished += 1
                     if progress:
                         progress("play", finished, n)
@@ -197,6 +218,35 @@ class Trainer:
         self.steps += sum(len(e.act) for e in eps)
         self.episodes += n
         return eps
+
+    def _rollout_pool(self, n, deterministic, mus, seeds, progress):
+        """Worker processes play whole episodes with a NumPy copy of the network."""
+        spec = [export(m) for m in mus] if mus is not None else export(self.policy.mu, self.policy.log_std)
+        results = self.envs.run(spec, seeds, deterministic, progress)
+        dense = getattr(self.Env, "dense", False)
+        eps = []
+        for r in results:
+            e = Episode()
+            e.obs, e.act, e.logp = list(r["obs"]), list(r["act"]), r["logp"]
+            e.metrics, e.replay = r["metrics"], r["replay"]
+            e.reward = self._reward(e.metrics)
+            if dense:
+                v = [self._value(m) for m in r["steps"]]
+                e.rews = [b - a for a, b in zip(v, v[1:])]
+            eps.append(e)
+        self.steps += sum(len(e.act) for e in eps)
+        self.episodes += n
+        return eps
+
+    def _value(self, metrics):
+        v = self.reward_fn(metrics)
+        return v if math.isfinite(v) else 0.0
+
+    def close(self):
+        """Stop any worker processes."""
+        if self.envs is not None:
+            self.envs.close()
+            self.envs = None
 
     def _fix_nan(self, eps):
         ok = [e.reward for e in eps if not math.isnan(e.reward)]
@@ -216,6 +266,8 @@ class Trainer:
         t0 = time.perf_counter()
         if self.algo == "es":
             eps, extra = self._es(progress)
+        elif self.algo == "grpo":
+            eps, extra = self._grpo(progress)
         else:
             eps = self.rollout(self.hp["episodes"], progress=progress)
             self._fix_nan(eps)
@@ -245,29 +297,53 @@ class Trainer:
         logp = torch.as_tensor(np.concatenate([e.logp for e in eps]), dtype=torch.float32)
         with torch.no_grad():
             val = self.value(obs).squeeze(-1).numpy() if self.value is not None else np.zeros(len(obs))
-        rn = self._norm([e.reward for e in eps])
-        adv, ret = adv_fn(eps, rn, val)
+        adv, ret = adv_fn(eps, self._step_rewards(eps), val)
         return obs, act, logp, torch.as_tensor(adv, dtype=torch.float32), torch.as_tensor(ret, dtype=torch.float32)
 
-    def _gae(self, eps, rn, val):
+    def _step_rewards(self, eps):
+        """One reward array per episode. End-scored games get their (normalised) reward on the last
+        step; dense games get their step rewards, scaled by the running spread of episode returns."""
+        if eps[0].rews is None:
+            rn = self._norm([e.reward for e in eps])
+            out = []
+            for e, R in zip(eps, rn):
+                r = np.zeros(len(e.act))
+                r[-1] = R
+                out.append(r)
+            return out
+        totals = [float(np.sum(e.rews)) for e in eps]
+        scale = 1.0
+        if self.hp["norm_reward"]:
+            self.rstat.push(totals)
+            scale = 1.0 / (self.rstat.std + 1e-8)
+        return [np.clip(np.asarray(e.rews) * scale, -10, 10) for e in eps]
+
+    def _gae(self, eps, rs, val):
         g, lam = self.hp["gamma"], self.hp["lam"]
         adv = np.zeros(len(val))
         i = 0
-        for e, R in zip(eps, rn):
+        for e, rew in zip(eps, rs):
             n = len(e.act)
             v = val[i:i + n]
             last = 0.0
             for t in reversed(range(n)):
-                r = R if t == n - 1 else 0.0
+                r = rew[t]
                 nv = v[t + 1] if t + 1 < n else 0.0
                 last = r + g * nv - v[t] + g * lam * last
                 adv[i + t] = last
             i += n
         return adv, adv + val
 
-    def _mc(self, eps, rn, val):
+    def _mc(self, eps, rs, val):
         g = self.hp["gamma"]
-        ret = np.concatenate([R * g ** np.arange(len(e.act) - 1, -1, -1) for e, R in zip(eps, rn)])
+        ret = []
+        for rew in rs:
+            acc, out = 0.0, np.zeros(len(rew))
+            for t in reversed(range(len(rew))):
+                acc = rew[t] + g * acc
+                out[t] = acc
+            ret.append(out)
+        ret = np.concatenate(ret)
         adv = ret - val if self.hp["baseline"] else ret
         return adv, ret
 
@@ -314,6 +390,59 @@ class Trainer:
                 break
         u = max(1, updates)
         return {"pl": pl / u, "vl": vl / u, "ent": ent / u, "kl": kl / u, "clipFrac": cf / u, "updates": updates}
+
+    def _grpo(self, progress=None):
+        """Group Relative Policy Optimization (as in DeepSeekMath / R1).
+
+        Each group plays the same situation (same seed, so the same board height, throw or bread
+        position) with different exploration noise. An episode's advantage is its reward relative
+        to its own group: (R - group mean) / group std, given to every decision in it. No critic.
+        The update is PPO's clipped objective plus a KL penalty towards the policy that played.
+        """
+        hp = self.hp
+        G = hp["group"]
+        groups = hp["episodes"] // G
+        seeds = [int(s) for s in np.repeat(self.rng.integers(2**31, size=groups), G)]
+        eps = self.rollout(groups * G, seeds=seeds, progress=progress)
+        self._fix_nan(eps)
+        R = np.array([e.reward for e in eps]).reshape(groups, G)
+        spread = R.std(1, keepdims=True)
+        a_ep = np.where(spread > 1e-8, (R - R.mean(1, keepdims=True)) / (spread + 1e-8), 0.0).ravel()
+        obs = torch.as_tensor(np.concatenate([np.stack(e.obs) for e in eps]))
+        act = torch.as_tensor(np.concatenate([np.stack(e.act) for e in eps]))
+        old_logp = torch.as_tensor(np.concatenate([e.logp for e in eps]), dtype=torch.float32)
+        adv = torch.as_tensor(np.concatenate([np.full(len(e.act), a) for e, a in zip(eps, a_ep)]), dtype=torch.float32)
+        n = len(obs)
+        pl = ent = kl = cf = 0.0
+        updates = 0
+        stop = False
+        for epoch in range(hp["epochs"]):
+            if progress:
+                progress("learn", epoch, hp["epochs"])
+            perm = torch.randperm(n)
+            for s in range(0, n, hp["minibatch"]):
+                idx = perm[s:s + hp["minibatch"]]
+                d = self.policy.dist(obs[idx])
+                logp = d.log_prob(act[idx]).sum(-1)
+                ratio = (logp - old_logp[idx]).exp()
+                a = adv[idx]
+                p_loss = -torch.min(ratio * a, ratio.clamp(1 - hp["clip"], 1 + hp["clip"]) * a).mean()
+                # unbiased KL estimate: pi_ref/pi - log(pi_ref/pi) - 1
+                log_r = old_logp[idx] - logp
+                k3 = (log_r.exp() - log_r - 1).mean()
+                entropy = d.entropy().sum(-1).mean()
+                self._step(p_loss + hp["beta"] * k3 - hp["ent"] * entropy)
+                pl += p_loss.item(); ent += entropy.item(); kl += k3.item()
+                cf += float(((ratio - 1).abs() > hp["clip"]).float().mean())
+                updates += 1
+                if hp["target_kl"] > 0 and k3.item() > 1.5 * hp["target_kl"]:
+                    stop = True
+                    break
+            if stop:
+                break
+        u = max(1, updates)
+        return eps, {"pl": pl / u, "ent": ent / u, "kl": kl / u, "clipFrac": cf / u, "updates": updates,
+                     "groups": groups, "flatGroups": int((spread.ravel() <= 1e-8).sum())}
 
     def _reinforce(self, eps, progress=None):
         hp = self.hp

@@ -6,7 +6,7 @@
 const fract = x => x - Math.floor(x);
 const hash = (a, b, c) => fract(Math.sin(a * 127.1 + b * 311.7 + c * 74.7) * 43758.5453);
 
-export function createNet(canvas, { obs, act, sizes, colors }) {
+export function createNet(canvas, { obs, act, sizes, colors, scale: k = 1 }) {
   const g = canvas.getContext('2d');
   let W = 0, H = 0;
   function fit() {
@@ -15,7 +15,7 @@ export function createNet(canvas, { obs, act, sizes, colors }) {
     W = r.width; H = r.height;
   }
   fit();
-  const padL = 130, padR = 170, top = 40, bot = 16;
+  const padL = 130 * k, padR = 170 * k, top = 40 * k, bot = 16 * k;
   const x = i => padL + i / (sizes.length - 1) * (W - padL - padR);
   const y = (n, j) => n === 1 ? (top + H - bot) / 2 : top + j / (n - 1) * (H - top - bot);
   const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
@@ -52,7 +52,7 @@ export function createNet(canvas, { obs, act, sizes, colors }) {
     sizes.forEach((n, l) => {
       for (let j = 0; j < n; j++) {
         const v = acts ? Math.tanh(acts[l][j]) : 0, m = Math.abs(v), c = v >= 0 ? C.accent : C.deep;
-        const cx = x(l), cy = y(n, j), r = l === 0 || l === sizes.length - 1 ? 8 : 9;
+        const cx = x(l), cy = y(n, j), r = (l === 0 || l === sizes.length - 1 ? 8 : 9) * k;
         if (mode !== 'learn' && m > 0.55) { g.shadowColor = rgba(c, 0.9); g.shadowBlur = 18 * m; }
         g.fillStyle = rgba(mix(C.panel, c, mode === 'learn' ? 0.15 * m : m), 1);
         g.strokeStyle = rgba(C.ink, 0.75); g.lineWidth = 1.2;
@@ -60,24 +60,24 @@ export function createNet(canvas, { obs, act, sizes, colors }) {
       }
     });
     // column titles
-    g.font = '600 15px "Barlow Condensed", sans-serif'; g.fillStyle = rgba(C.muted, 1); g.textAlign = 'center';
-    sizes.forEach((n, l) => g.fillText((l === 0 ? 'SEES' : l === sizes.length - 1 ? 'DOES' : `HIDDEN ${l}`), x(l), 18));
+    g.font = `600 ${15 * k}px "Barlow Condensed", sans-serif`; g.fillStyle = rgba(C.muted, 1); g.textAlign = 'center';
+    sizes.forEach((n, l) => g.fillText((l === 0 ? 'SEES' : l === sizes.length - 1 ? 'DOES' : `HIDDEN ${l}`), x(l), 18 * k));
     // input labels
-    g.font = '400 14px Barlow, sans-serif'; g.textAlign = 'right'; g.fillStyle = rgba(C.ink, 1);
-    obs.forEach((name, j) => g.fillText(name, x(0) - 16, y(sizes[0], j) + 5));
+    g.font = `400 ${14 * k}px Barlow, sans-serif`; g.textAlign = 'right'; g.fillStyle = rgba(C.ink, 1);
+    obs.forEach((name, j) => g.fillText(name, x(0) - 16 * k, y(sizes[0], j) + 5 * k));
     // outputs with a bar for the chosen action
     const nOut = sizes.at(-1);
     act.forEach((name, j) => {
-      const cy = y(nOut, j), x0 = x(sizes.length - 1) + 20;
-      g.textAlign = 'left'; g.fillStyle = rgba(C.ink, 1); g.font = '500 15px Barlow, sans-serif';
-      g.fillText(name, x0, cy - 9);
+      const cy = y(nOut, j), x0 = x(sizes.length - 1) + 20 * k;
+      g.textAlign = 'left'; g.fillStyle = rgba(C.ink, 1); g.font = `500 ${15 * k}px Barlow, sans-serif`;
+      g.fillText(name, x0, cy - 9 * k);
       const bw = padR - 40, mid = x0 + bw / 2, v = actions ? Math.max(-1, Math.min(1, actions[j])) : 0;
-      g.fillStyle = rgba(C.line, 1); g.fillRect(x0, cy + 1, bw, 8);
+      g.fillStyle = rgba(C.line, 1); g.fillRect(x0, cy + 1, bw, 8 * k);
       g.fillStyle = rgba(v >= 0 ? C.accent : C.deep, 1);
-      g.fillRect(Math.min(mid, mid + v * bw / 2), cy + 1, Math.abs(v) * bw / 2, 8);
+      g.fillRect(Math.min(mid, mid + v * bw / 2), cy + 1, Math.abs(v) * bw / 2, 8 * k);
       g.fillStyle = rgba(C.ink, 0.6); g.fillRect(mid - 0.5, cy - 1, 1, 12);
     });
-    if (title) { g.textAlign = 'left'; g.font = '600 15px "Barlow Condensed", sans-serif'; g.fillStyle = rgba(C.gold, 1); g.fillText(title, 0, H - 2); }
+    if (title) { g.textAlign = 'left'; g.font = `600 ${15 * k}px "Barlow Condensed", sans-serif`; g.fillStyle = rgba(C.gold, 1); g.fillText(title, 0, H - 2); }
   }
   return { draw, fit };
 }

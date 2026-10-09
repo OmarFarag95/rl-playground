@@ -5,6 +5,8 @@ import { createNet, lerpWeights } from './netfx.js';
 
 const $ = id => document.getElementById(id);
 const capture = location.search.includes('capture');
+const vertical = location.search.includes('vertical');   // 1080×1920 for TikTok, Reels and Shorts
+if (vertical) document.documentElement.classList.add('vertical');
 // a seeded Math.random, so splashes come out the same on every render
 let seed = 11;
 Math.random = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
@@ -14,11 +16,11 @@ await document.fonts.ready;
 
 const SUB = [
   'Random weights. It has never touched water.',
-  'Five updates in. Still a beginner.',
+  'Still flailing, apart from the odd lucky dive',
   'Learning what a splash costs',
-  'Straighter, cleaner, less water',
-  'Nearly there',
-  'A clean entry from a high board',
+  'Head first, most of the time',
+  'Straighter and straighter',
+  'A head-first rip from 7 metres',
 ];
 const PLAY_SPEED = 0.6;          // slow motion for the dives
 const ease = p => p < 0.5 ? 2 * p * p : 1 - (-2 * p + 2) ** 2 / 2;
@@ -27,11 +29,28 @@ const css = getComputedStyle(document.documentElement);
 const color = n => css.getPropertyValue('--' + n).trim();
 
 let T = 0;
-const stage = createStage({ canvas: $('stage'), flat: $('flat'), tags: [...document.querySelectorAll('.tag')], now: () => T, gl: { preserveDrawingBuffer: true } });
+// every sound the film needs, with its time; render.py turns this list into the soundtrack
+const events = [];
+window.__events = events;
+const GHOST_TINT = { 1: '#8A9BA2', 2: '#E0A21B' };   // first try: grey, best so far: gold
+let soundRole = 'main';
+const stage = createStage({
+  canvas: $('stage'), flat: $('flat'), tags: [...document.querySelectorAll('.tag')], now: () => T, gl: { preserveDrawingBuffer: true },
+  onEvent: (ep, i, kind) => {
+    if (kind !== 'land') return;
+    const vol = soundRole === 'montage' ? (i ? 0.18 : 0.4) : i ? 0.3 : 1;
+    events.push({ t: T, kind: 'splash', splash: ep.m.splash, speed: ep.m.speed, vol });
+  },
+});
 stage.setGame(data.game);
 stage.readColors();
-const net = createNet($('net'), { obs: data.obs, act: data.act, sizes: data.sizes, colors: Object.fromEntries(['accent', 'deep', 'ink', 'muted', 'line', 'panel', 'gold'].map(k => [k, color(k)])) });
-$('formula').textContent = data.formula.replace('-', '−');
+const net = createNet($('net'), { obs: data.obs, act: data.act, sizes: data.sizes, scale: vertical ? 1.3 : 1, colors: Object.fromEntries(['accent', 'deep', 'ink', 'muted', 'line', 'panel', 'gold'].map(k => [k, color(k)])) });
+const pretty = data.formula.replace(/-/g, '−');
+// the hook line at the top of the vertical video; ?hook=... overrides it
+const hook = new URLSearchParams(location.search).get('hook');
+const board = data.chapters[0].ep.board;
+$('hook').innerHTML = hook ? hook.replace(/[<>&]/g, '') : `AI learns to dive <span>from ${Number.isInteger(board) ? board : board.toFixed(1)} m</span>`;
+$('formula').textContent = pretty;
 $('netNote').textContent = `${data.sizes.slice(1, -1).join(' × ')} tanh neurons · 20 decisions a second`;
 
 const ch = data.chapters, N = ch.length;
@@ -53,27 +72,53 @@ add('finale', 7, N - 1);
 let cur = null, iterNow = 0;
 function enter(s) {
   const c = ch[s.i];
-  $('card').hidden = true; $('badge').hidden = true; $('caption').hidden = true;
-  stage.setShowAll(false);
+  if (s.kind === 'hold') return; // the dive and its ghosts stay on screen
+  $('card').hidden = true; $('badge').hidden = true; $('caption').hidden = true; $('stageWrap').classList.remove('carded');
+  stage.setShowAll(false); hideGhostTags();
   if (s.kind === 'intro') {
     stage.load([c.ep]);
-    showCard('Splash Lab', 'Watch a neural network learn to dive', `Nobody shows it how. It only gets one number after each dive: reward = −splash.`);
+    showCard('Splash Lab', 'Watch a neural network learn to dive', `Nobody shows it how. After each dive it gets one number: reward = ${pretty}.`);
   } else if (s.kind === 'card') {
     stage.load([c.ep]);
+    events.push({ t: T, kind: 'whoosh' });
     showCard(c.iter === 0 ? 'Before any learning' : c.iter === ch.at(-1).iter ? 'After training' : 'Checkpoint', `Update ${c.iter}`, SUB[s.i] || '');
+  } else if (s.kind === 'play') {
+    // the dive itself, with the very first try and the best try so far as ghosts beside it
+    const set = s.i === 0 ? [c.ep] : [c.ep, ch[0].ep, c.best];
+    stage.load(set); stage.setShowAll(true); stage.tint(1, GHOST_TINT[1]); stage.tint(2, GHOST_TINT[2]);
+    soundRole = 'main';
+    events.push({ t: T + c.ep.wt / PLAY_SPEED * 0.92, kind: 'board' });
   } else if (s.kind === 'learn') {
-    stage.load(data.montages[s.i]); stage.setShowAll(true);
+    stage.tint(1, null); stage.tint(2, null);
+    stage.load(data.montages[s.i]); stage.setShowAll(true); soundRole = 'montage';
+    events.push({ t: T, kind: 'rise', dur: s.dur });
   } else if (s.kind === 'finale') {
+    events.push({ t: T, kind: 'chime' });
     const a = ch[0].batch.splash, b = ch.at(-1).batch.splash;
-    $('card').hidden = false;
+    $('card').hidden = false; $('stageWrap').classList.add('carded');
     $('card').innerHTML = `<div class="k">${ch.at(-1).iter} updates · ${data.episodes.toLocaleString('en')} practice dives · ${data.trainSecs} seconds on a laptop CPU</div>
-      <div class="h">From flop to clean entry</div>
+      <div class="h">From belly flop to head‑first rip</div>
       <div class="big"><div><b>${fmt(a)} L</b><span>average splash at first</span></div><div><b>→</b><span>&nbsp;</span></div><div><b>${fmt(b)} L</b><span>average splash now</span></div></div>
       <div class="s">Same game, same physics. Only the weights changed, nudged by reinforcement learning.</div>`;
   }
 }
+// labels that follow the two ghost divers until they hit the water
+const gtags = [1, 2].map(i => { const el = document.createElement('div'); el.className = 'gtag g' + i; el.hidden = true; $('stageWrap').appendChild(el); return el; });
+function hideGhostTags() { gtags.forEach(el => { el.hidden = true; }); }
+function ghostTags(i) {
+  if (i === 0) return hideGhostTags();
+  const c = ch[i], eps = [null, ch[0].ep, c.best];
+  [1, 2].forEach(k => {
+    const ep = eps[k], el = gtags[k - 1], n = ep.fr.length / 12, f = Math.min(n - 1, Math.floor(stage.clock * 60));
+    const show = stage.clock < ep.E - 0.05;
+    el.hidden = !show; if (!show) return;
+    el.textContent = k === 1 ? 'Very first try' : `Best so far · update ${c.best.iter}`;
+    const p = stage.project(ep.fr[f * 12], ep.fr[f * 12 + 1] + 0.95, stage.depth(k));
+    el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
+  });
+}
 function showCard(k, h, s) {
-  $('card').hidden = false;
+  $('card').hidden = false; $('stageWrap').classList.add('carded');
   $('card').innerHTML = `<div class="k">${k}</div><div class="h">${h}</div><div class="s">${s}</div>`;
 }
 
@@ -99,10 +144,12 @@ function update(dt) {
     stage.tick(dt * PLAY_SPEED);
     net_ = { ...netAt(c.ep, stage.clock), mode: 'forward' };
     if (s.kind === 'play') { $('badge').hidden = false; $('badge').className = 'badge'; $('badge').textContent = c.ep.label; }
+    ghostTags(s.i);
     if (stage.clock >= c.ep.E) {
-      const m = c.ep.m;
+      const m = c.ep.m, row = (cls, name, mm) => `<div class="${cls}"><i></i><span>${name}</span><b>${fmt(mm.splash)} L</b><em>${mm.headfirst ? 'head first' : 'feet first'}, ${fmt(mm.entry_angle)}° off vertical</em></div>`;
       $('caption').hidden = false;
-      $('caption').textContent = `Splash ${fmt(m.splash)} L · ${m.headfirst ? 'head first' : 'feet first'}, ${fmt(m.entry_angle)}° off vertical · ${fmt(m.board, 1)} m board`;
+      $('caption').innerHTML = row('now', s.i === N - 1 ? 'Trained network' : `This try`, m)
+        + (s.i ? row('best', `Best so far (update ${c.best.iter})`, c.best.m) + row('first', 'Very first try', ch[0].ep.m) : '');
     }
   } else if (s.kind === 'learn') {
     if (stage.tick(dt * 1.6)) stage.load(data.montages[s.i]);
@@ -121,7 +168,7 @@ function update(dt) {
   // where training stands
   iterNow = s.kind === 'learn' ? c.iter + (ch[s.i + 1].iter - c.iter) * ease(Math.min(1, p * 1.1)) : c.iter;
   const bSplash = s.kind === 'learn' ? c.batch.splash + (ch[s.i + 1].batch.splash - c.batch.splash) * ease(Math.min(1, p * 1.1)) : c.batch.splash;
-  net.draw({ weights, ...net_, time: T, title: s.kind === 'learn' ? 'BACKPROPAGATION · EVERY WEIGHT NUDGED TOWARDS LESS SPLASH' : '' });
+  net.draw({ weights, ...net_, time: T, title: s.kind === 'learn' ? 'BACKPROPAGATION · EVERY WEIGHT NUDGED TOWARDS MORE REWARD' : '' });
   drawCurve(iterNow);
   // header and chips
   const titles = { intro: ['Learning to dive', 'A neural network, a springboard and one rule'], card: [`Update ${c.iter}`, SUB[s.i]],
@@ -133,6 +180,7 @@ function update(dt) {
   $('cDives').textContent = (Math.round(iterNow) * 32).toLocaleString('en');
   $('cSplashL').textContent = s.i === N - 1 && s.kind !== 'learn' ? 'Avg splash, test' : 'Avg splash';
   $('cSplash').textContent = fmt(bSplash) + ' L';
+  $('hud').innerHTML = `<b>Update ${Math.round(iterNow)}</b> · ${(Math.round(iterNow) * 32).toLocaleString('en')} dives<br>${$('cSplashL').textContent.toLowerCase()} <b>${fmt(bSplash)} L</b>`;
   // milestone timeline
   const done = s.kind === 'learn' ? s.i + ease(Math.min(1, p * 1.1)) : s.i;
   $('tlFill').style.width = `calc((100% - 28px) * ${done / (N - 1)})`;
@@ -145,11 +193,11 @@ const H_ = data.history;
 const lo = Math.min(...H_.map(h => h.mean)), hi = Math.max(...H_.map(h => h.best));
 function drawCurve(upTo) {
   const r = cv.getBoundingClientRect(); if (cv.width !== r.width) { cv.width = r.width; cv.height = r.height; }
-  const w = r.width, h = r.height, L = 58, R = 16, Tp = 10, B = 26, n = H_.length;
+  const k = vertical ? 1.4 : 1, w = r.width, h = r.height, L = 58 * k, R = 16, Tp = 10, B = 26 * k, n = H_.length;
   const px = i => L + i / n * (w - L - R), py = v => Tp + (hi - v) / (hi - lo) * (h - Tp - B);
   g.clearRect(0, 0, w, h);
   g.strokeStyle = color('line'); g.lineWidth = 1; g.beginPath(); g.moveTo(L, Tp); g.lineTo(w - R, Tp); g.moveTo(L, h - B); g.lineTo(w - R, h - B); g.stroke();
-  g.font = '500 15px Barlow, sans-serif'; g.fillStyle = color('muted'); g.textAlign = 'right';
+  g.font = `500 ${15 * k}px Barlow, sans-serif`; g.fillStyle = color('muted'); g.textAlign = 'right';
   g.fillText(fmt(hi), L - 8, Tp + 5); g.fillText(fmt(lo), L - 8, h - B + 5);
   let lastX = -99;
   ch.forEach(c => { const x = px(c.iter); g.fillStyle = color('line'); g.fillRect(x - 0.5, Tp, 1, h - Tp - B); if (x - lastX > 28) { g.fillStyle = color('muted'); g.textAlign = 'center'; g.fillText(c.iter, x, h - 6); lastX = x; } });

@@ -51,7 +51,23 @@
           <div class="bar thin" id="updBar" role="progressbar" aria-label="Progress inside the current update" aria-valuemin="0" aria-valuemax="100"><i></i></div>
           <p class="hint" id="updText">Press Train to start.</p>
         </div>
-        <div class="row">
+        <div class="live" id="livePanel" hidden>
+          <div class="row">
+            <button id="liveBtn" class="primary">▶ Play live</button>
+            <label class="inline" title="Let it act with its exploration noise, as in training"><input type="checkbox" id="liveNoise"> Exploration noise</label>
+            <span class="spacer"></span>
+            <span class="hint" id="liveStat"></span>
+          </div>
+          <div class="row" id="liveTools">
+            <button data-poke="shove" data-v="-160" title="Shortcut: ←">⟵ Shove</button>
+            <button data-poke="shove" data-v="160" title="Shortcut: →">Shove ⟶</button>
+            <button data-poke="crate" title="Shortcut: Space, or click the ground in the picture">Drop a crate</button>
+            <label class="inline">Wind <input type="range" id="liveWind" min="-300" max="300" step="10" value="0" aria-describedby="liveWindV"></label>
+            <span class="hint" id="liveWindV">calm</span>
+          </div>
+          <p class="hint">Get in its way while it walks. Live play uses the network as it is right now, so you can keep training and watch it improve. To make it tougher, train with crates, shoves or wind in the world settings.</p>
+        </div>
+        <div class="row" id="watchRow">
           <div class="seg" role="group" aria-label="What to watch">
             <button data-view="train" aria-pressed="true" title="Episodes from the latest update, with exploration noise">Training episodes</button>
             <button data-view="eval" aria-pressed="false" title="Fresh episodes with the noise turned off: what the network has really learned">Test the policy</button>
@@ -116,7 +132,7 @@
           </div>
           <div>
             <h3>Value (critic)</h3>
-            <p class="hint">Guesses the reward from each state. Used by PPO and REINFORCE, not by evolution.</p>
+            <p class="hint">Guesses the reward from each state. Used by PPO and REINFORCE. GRPO and evolution do without it.</p>
             <label class="inline"><input type="checkbox" id="valSame" checked> Same layout as the policy</label>
             <div id="valBox" hidden>
               <div id="valLayers" class="layers"></div>
@@ -145,7 +161,7 @@
           <thead><tr><th>Variable</th><th>Meaning</th><th>Best</th><th>Average</th></tr></thead>
           <tbody id="vars"></tbody>
         </table>
-        <p class="hint">Use + − * / ^, brackets, and abs, min, max, sqrt, exp, log, tanh, clip(x, lo, hi). The reward arrives once, at the end of each episode. Changing the formula keeps what the network has learned, so you can reshape behaviour while it trains.</p>
+        <p class="hint">Use + − * / ^, brackets, and abs, min, max, sqrt, exp, log, tanh, clip(x, lo, hi). <span id="rewardWhen"></span></p>
       </section>
 
       <section class="panel">

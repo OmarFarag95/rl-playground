@@ -105,5 +105,9 @@ label.inline{display:inline-flex;gap:6px;align-items:center;font-size:13px;color
 .bar.thin{height:5px;border:0}
 .bar.thin i{background:var(--deep);transition:width .08s linear}
 .bar.done i{background:var(--grass)}
+.live{display:flex;flex-direction:column;gap:8px;border:1px dashed var(--line);border-radius:6px;padding:10px}
+.live #liveTools{opacity:.45;pointer-events:none}
+.live.on #liveTools{opacity:1;pointer-events:auto}
+.live input[type=range]{width:160px;accent-color:var(--deep)}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--panel);padding:8px 14px;border-radius:4px;font-size:14px;max-width:calc(100% - 32px);z-index:5}
 .toast.bad{background:var(--bad);color:#fff}

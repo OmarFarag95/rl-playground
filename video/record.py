@@ -4,8 +4,10 @@ For a handful of milestones it saves one real episode, the policy weights at tha
 moment, and the activation of every neuron at every decision the network made,
 so the video can show signals flowing through the network in step with the dive.
 
-    python video/record.py            # writes video/out/showcase.json
+    python video/record.py                                   # writes video/out/showcase.json
+    python video/record.py --formula "-splash" --seed 5      # another reward or run
 """
+import argparse
 import json
 import math
 import sys
@@ -21,10 +23,9 @@ from rlplay.envs.base import DT, SUBSTEPS  # noqa: E402
 from rlplay.envs.diver import WIND_UP  # noqa: E402
 from rlplay.trainer import Trainer  # noqa: E402
 
-GAME, FORMULA = "diver", "-splash"
+GAME = "diver"
 NET = {"policy": {"layers": [{"units": 16, "act": "tanh"}, {"units": 16, "act": "tanh"}]}}
 MILESTONES = [0, 5, 20, 60, 150, 300]
-SEED = 3
 OUT = ROOT / "video" / "out" / "showcase.json"
 
 
@@ -65,19 +66,28 @@ def pick(eps, q):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--formula", default="20*headfirst - splash")
+    ap.add_argument("--seed", type=int, default=3)
+    ap.add_argument("--board", type=float, default=7.0, help="springboard height in metres, the same for every dive")
+    a = ap.parse_args()
     torch.set_num_threads(2)
-    t = Trainer(GAME, FORMULA, NET, "ppo", {"episodes": 32}, seed=SEED)
+    t = Trainer(GAME, a.formula, NET, "ppo", {"episodes": 32}, seed=a.seed, settings={"board_min": a.board, "board_max": a.board})
     chapters, montages, t0 = [], [], time.time()
     final = MILESTONES[-1]
     # a few training episodes between milestones, for the fast-forward montages
     between = {m: set(np.linspace(a, m, 5, dtype=int)[1:-1].tolist()) for a, m in zip(MILESTONES, MILESTONES[1:])}
     mont = {m: [] for m in MILESTONES[1:]}
-    rng = np.random.default_rng(SEED)
+    rng = np.random.default_rng(a.seed)
+    best = None  # the best try seen so far in training, for the comparison ghosts
     for it in range(final + 1):
         w = weights(t) if it in MILESTONES else None
         if it < final:
             stats = t.iterate()
             batch = t.last
+            if best is None or batch[0].reward > best["reward"]:
+                e = batch[0]
+                best = {"reward": e.reward, "m": e.metrics, "iter": it, **e.replay}
             for m, its in between.items():
                 if it in its:
                     e = batch[rng.integers(len(batch))]
@@ -85,26 +95,28 @@ def main():
         if it in MILESTONES and it < final:
             q = {0: 0.0, 5: 0.25}.get(it, 0.5)  # update 0: the biggest flop of the batch; then typical tries
             e = pick(batch, q)
-            chapters.append({"iter": it, "weights": w, "ep": episode(t, e, f"One of 32 tries at update {it}"),
+            chapters.append({"iter": it, "weights": w, "ep": episode(t, e, f"One of 32 tries at update {it}"), "best": best,
                              "batch": {"mean": stats["mean"], "splash": stats["meanM"]["splash"],
                                        "angle": stats["meanM"]["entry_angle"]}})
-            print(f"update {it:3d}: shown splash {e.metrics['splash']:.1f} L, batch mean {stats['meanM']['splash']:.1f} L", flush=True)
+            print(f"update {it:3d}: shown splash {e.metrics['splash']:.1f} L, head first {e.metrics['headfirst']:.0f}, "
+                  f"batch mean splash {stats['meanM']['splash']:.1f} L, head first {stats['meanM']['headfirst']:.0%}", flush=True)
     secs = time.time() - t0
-    # the finished network, tested without exploration noise, on a high board
-    ev = [e for e in t.rollout(40, deterministic=True) if e.metrics["board"] > 2.3]
-    e = pick(ev, 0.5)
+    train_episodes = t.episodes
+    # the finished network, tested without exploration noise
+    e = pick(t.rollout(40, deterministic=True), 0.5)
     tests = t.rollout(64, deterministic=True)
-    chapters.append({"iter": final, "weights": weights(t), "ep": episode(t, e, "Policy test, exploration noise off"),
+    chapters.append({"iter": final, "weights": weights(t), "ep": episode(t, e, "Policy test, exploration noise off"), "best": best,
                      "batch": {"mean": float(np.mean([x.reward for x in tests])),
                                "splash": float(np.mean([x.metrics["splash"] for x in tests])),
                                "angle": float(np.mean([x.metrics["entry_angle"] for x in tests]))}})
-    print(f"update {final}: shown splash {e.metrics['splash']:.1f} L, test mean {chapters[-1]['batch']['splash']:.1f} L")
+    print(f"update {final}: shown splash {e.metrics['splash']:.1f} L, head first {e.metrics['headfirst']:.0f}, "
+          f"test mean splash {chapters[-1]['batch']['splash']:.1f} L, head first {np.mean([x.metrics['headfirst'] for x in tests]):.0%}")
     env = t.Env
-    data = {"game": GAME, "formula": FORMULA, "obs": env.obs_names, "act": env.act_names,
+    data = {"game": GAME, "formula": a.formula, "obs": env.obs_names, "act": env.act_names,
             "sizes": [env().obs_dim] + [l["units"] for l in NET["policy"]["layers"]] + [env().act_dim],
             "history": [{"iter": h["iter"], "best": h["best"], "mean": h["mean"]} for h in t.history],
             "chapters": chapters, "montages": [mont[m] for m in MILESTONES[1:]],
-            "episodes": t.episodes, "trainSecs": round(secs)}
+            "episodes": train_episodes, "trainSecs": round(secs)}
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(data, separators=(",", ":"), allow_nan=False))
     print(f"wrote {OUT} ({OUT.stat().st_size // 1024} KB) after {secs:.0f} s of training")

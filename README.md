@@ -18,7 +18,9 @@ fastest on a few threads).
    keeps what it has learned and adapts to the new goal.
 3. **Design the network.** Add, remove and reorder layers, and set each layer's width, activation and LayerNorm.
    The critic (value network) can copy the policy's layout or have its own. *Build this network* starts again from random weights.
-4. **Choose an algorithm.** PPO, REINFORCE or evolution strategies. Switching keeps the policy weights.
+4. **Choose an algorithm.** PPO, GRPO, REINFORCE or evolution strategies. Switching keeps the policy weights.
+   GRPO (the method behind DeepSeek-R1) plays groups of episodes in the same situation and scores each
+   one against its group's average, so it needs no critic.
 5. **Set a goal and train.** *Train for N updates* fills the progress bar and estimates the time left, and
    training pauses when it gets there (0 means no limit). The thin bar below it tracks the current update:
    first playing its episodes, then learning from them. Then watch. *Training episodes* shows the latest batch, exploration noise included.
@@ -42,8 +44,26 @@ fastest on a few threads).
 | Frisbee dog | the dog and the frisbee | running speed 20× a second, then when to jump, how high, how much spin | the throw |
 | Pizza chef | the dough's flight, the hands | toss power, spin, wobble and drift, then where to move the hands | ceiling height, draught |
 | Sandwich | where the bread and earlier pieces ended up | where to drop each of 5 pieces and how to turn it | bread position, how pieces slide |
+| Walker | its pose, joint angles, foot contacts and 10 lidar rays ahead | target angles for both hips and knees, 20× a second, for up to 30 s | rough ground; optional crates, shoves and wind |
 
 The physics is 2D rigid-body simulation with [pymunk](https://www.pymunk.org/) at 120 Hz. The agent decides every 6 physics steps.
+
+### The walker: long episodes, step rewards and live play
+
+The walker is the hard one: hundreds of decisions per episode instead of a handful. Three things make it workable:
+
+- **Step rewards from your formula.** Games marked `dense` report their metrics at every step, and each
+  step earns the change in the formula's value. The step rewards add up to exactly the formula on the
+  final result, so the formula keeps its meaning, but PPO and REINFORCE get feedback right away.
+  GRPO and evolution keep using the episode total.
+- **Worker processes.** Heavy games (`parallel = True`) run on up to 10 worker processes. Each one plays whole
+  episodes with a NumPy copy of the policy (`nets.export`, `vec.forward`), about 6× faster than one process.
+  With *Walk forward*, it walks over 14 m in 12 s after roughly 5 minutes of training on a laptop CPU.
+- **Live mode.** *Play live* runs the current network in real time and streams it to the browser.
+  Get in its way: shove it with the buttons or the ← → keys, drop crates with the button, the space bar
+  or a click on the ground, and blow wind with the slider. Every new run takes a fresh copy of the
+  network, so you can keep training and watch it improve. To make it tougher, train it with crates,
+  random shoves or wind gusts in the world settings.
 
 ## Layout
 
@@ -52,7 +72,8 @@ backend/rlplay/
   envs/        the four games (Env: reset, step, metrics, replay)
   formula.py   safe parser for reward formulas (no eval)
   nets.py      MLP built from the layer spec, Gaussian policy, weight snapshots
-  trainer.py   lock-step rollouts, PPO, REINFORCE, evolution strategies, checkpoints
+  trainer.py   rollouts, step rewards, PPO, GRPO, REINFORCE, evolution strategies, checkpoints
+  vec.py       running episodes in this process or across worker processes
   server.py    FastAPI: static files and one training session per WebSocket
 frontend/
   app.js       UI, WebSocket client, charts, network designer
@@ -66,3 +87,21 @@ and adding a scene in `frontend/stage.js` that draws its `replay()` data.
 Training state lives on the server, in a session tied to your browser tab. Reloading the tab picks up
 the same run, still training if it was. A new tab starts its own session. Restarting the server
 ends every session, so save a checkpoint to keep a network.
+
+## Showcase video
+
+`video/` turns a real training run into a film. The dive from a 7 m board plays on the left. On the right is
+the policy network, with signals flowing through its weights at every decision, plus the learning curve.
+At each checkpoint the current dive plays next to ghosts of the very first try and the best try so far.
+The soundtrack is synthesised in `sound.py`: every water entry makes a "tishhh" whose loudness and length
+follow the real splash, so the flops roar and the trained dives barely hiss.
+
+```
+.venv/bin/python video/record.py              # train the diver, save milestones to video/out/showcase.json
+pip install playwright numpy imageio-ffmpeg    # once, in any Python environment
+python video/render.py                         # video/out/diver-showcase.mp4 (frame by frame, a few minutes)
+```
+
+`record.py --formula "-splash" --seed 5 --board 3` records a different reward, run or board height. `render.py --stills 5,30`
+saves single frames to check the look. You can also open `video/showcase.html` through any static server
+at the repo root to preview it live.

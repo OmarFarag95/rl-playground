@@ -9,9 +9,10 @@ import math
 import torch
 from torch import nn
 
+# GELU uses its tanh form, so the NumPy copy in vec.py computes exactly the same thing
 ACTS = {
     "relu": nn.ReLU, "tanh": nn.Tanh, "sigmoid": nn.Sigmoid, "elu": nn.ELU, "leaky_relu": nn.LeakyReLU,
-    "gelu": nn.GELU, "silu": nn.SiLU, "softplus": nn.Softplus, "linear": nn.Identity,
+    "gelu": lambda: nn.GELU(approximate="tanh"), "silu": nn.SiLU, "softplus": nn.Softplus, "linear": nn.Identity,
 }
 INITS = ("orthogonal", "xavier", "kaiming", "default")
 MAX_UNITS = 1024
@@ -129,3 +130,17 @@ def _pick(n, k):
         return list(range(n))
     step = (n - 1) / (k - 1)
     return sorted({round(i * step) for i in range(k)})
+
+
+def export(mlp, log_std=None):
+    """A NumPy copy of an MLP (and the policy's spread), for worker processes (see vec.forward)."""
+    layers = []
+    for m in mlp.net:
+        if isinstance(m, nn.Linear):
+            layers.append(("linear", m.weight.detach().numpy().copy(), m.bias.detach().numpy().copy()))
+        elif isinstance(m, nn.LayerNorm):
+            layers.append(("norm", m.weight.detach().numpy().copy(), m.bias.detach().numpy().copy(), m.eps))
+        else:
+            name = next(k for k, v in ACTS.items() if isinstance(m, type(v())))
+            layers.append(("act", name))
+    return {"layers": layers, "log_std": None if log_std is None else log_std.detach().numpy().copy()}

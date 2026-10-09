@@ -9,24 +9,27 @@ const store = {
 
 const ALGO_INFO = {
   ppo: { name: 'PPO', hint: 'Proximal Policy Optimisation. Plays a batch of episodes, then makes several careful passes over them, keeping each change small. A sturdy default.' },
+  grpo: { name: 'GRPO', hint: 'Group Relative Policy Optimisation, the method behind DeepSeek-R1. Plays groups of episodes in the same situation and judges each one against its own group\'s average, so it needs no critic. If every episode in a group scores the same, that group teaches nothing.' },
   reinforce: { name: 'REINFORCE', hint: 'The classic policy gradient. One step per batch: actions that led to above-average reward become more likely. Simple and noisy.' },
   es: { name: 'Evolution', hint: 'Evolution strategies. Tries many slightly different copies of the network without exploration noise and moves the weights towards the better ones. No gradients through the network.' },
 };
 // [key, label, help, step, algos]
 const HP_FIELDS = [
-  ['episodes', 'Episodes per update', 'More episodes give steadier but slower updates. For evolution this is the population.', 1, 'ppo reinforce es'],
-  ['lr', 'Learning rate', 'How big each weight change is.', 'any', 'ppo reinforce es'],
+  ['episodes', 'Episodes per update', 'More episodes give steadier but slower updates. For evolution this is the population.', 1, 'ppo grpo reinforce es'],
+  ['lr', 'Learning rate', 'How big each weight change is.', 'any', 'ppo grpo reinforce es'],
   ['gamma', 'Discount γ', 'How much the reward at the end counts for earlier decisions.', 0.001, 'ppo reinforce'],
   ['lam', 'GAE λ', 'Trades bias for variance in the advantage estimate.', 0.01, 'ppo'],
-  ['epochs', 'Epochs', 'Passes over each batch.', 1, 'ppo'],
-  ['minibatch', 'Minibatch size', 'Decisions per gradient step.', 1, 'ppo'],
-  ['clip', 'Clip range', 'How far the policy may move in one update.', 0.01, 'ppo'],
-  ['target_kl', 'Target KL', 'Stop the epochs early if the policy changes more than this. 0 turns it off.', 0.001, 'ppo'],
-  ['ent', 'Entropy bonus', 'Rewards keeping some randomness, to keep exploring.', 0.001, 'ppo reinforce'],
+  ['epochs', 'Epochs', 'Passes over each batch.', 1, 'ppo grpo'],
+  ['minibatch', 'Minibatch size', 'Decisions per gradient step.', 1, 'ppo grpo'],
+  ['clip', 'Clip range', 'How far the policy may move in one update.', 0.01, 'ppo grpo'],
+  ['target_kl', 'Target KL', 'Stop the epochs early if the policy changes more than this. 0 turns it off.', 0.001, 'ppo grpo'],
+  ['ent', 'Entropy bonus', 'Rewards keeping some randomness, to keep exploring.', 0.001, 'ppo grpo reinforce'],
   ['vf', 'Value loss weight', 'How much the critic\'s error counts in the loss.', 0.05, 'ppo reinforce'],
-  ['max_grad', 'Gradient clip', 'Largest allowed gradient norm.', 0.05, 'ppo reinforce'],
-  ['log_std', 'Exploration (log σ)', 'Sets the exploration noise. Changing it resets the noise to this value.', 0.1, 'ppo reinforce'],
+  ['max_grad', 'Gradient clip', 'Largest allowed gradient norm.', 0.05, 'ppo grpo reinforce'],
+  ['log_std', 'Exploration (log σ)', 'Sets the exploration noise. Changing it resets the noise to this value.', 0.1, 'ppo grpo reinforce'],
   ['baseline', 'Use the critic as a baseline', 'Subtract the value estimate to reduce noise.', null, 'reinforce'],
+  ['group', 'Group size', 'Episodes that play the same situation and are compared with each other.', 1, 'grpo'],
+  ['beta', 'KL penalty β', 'Pulls the policy back towards the one that played the batch, so it does not drift too far.', 0.005, 'grpo'],
   ['norm_reward', 'Normalise rewards', 'Rescale rewards by their running mean and spread, so any formula scale works.', null, 'ppo reinforce'],
   ['sigma', 'Weight noise σ', 'How far each copy\'s weights are pushed.', 0.005, 'es'],
 ];
@@ -82,7 +85,8 @@ function on(m) {
     case 'ready': onReady(m); break;
     case 'stats': onStats(m); break;
     case 'weights': S.snap = m; drawNetwork(); break;
-    case 'replay': onReplay(m); break;
+    case 'replay': if (!S.live) onReplay(m); else S.pending = false; break;
+    case 'live': onLive(m); break;
     case 'running':
       if (m.on && !S.running) S.times = []; // a pause would skew the time-per-update estimate
       S.running = m.on; if (m.target !== undefined) S.target = m.target; showRunning(); showProgress();
@@ -111,7 +115,12 @@ function showGame(key, formula) {
   const g = G();
   document.querySelectorAll('#games button').forEach(b => b.setAttribute('aria-pressed', b.dataset.g === key));
   $('lede').textContent = g.lede; $('sndHint').textContent = g.hint; $('sStatL').textContent = g.statLabel;
-  $('all').hidden = !!g.flat;
+  const solo = !!(stage.games[key] && stage.games[key].solo);
+  $('all').hidden = !!g.flat || solo; $('cmp').hidden = solo;
+  $('livePanel').hidden = !g.live; liveOff();
+  $('rewardWhen').textContent = g.dense
+    ? 'This game is scored at every step: each step earns the change in the formula\'s value, so the steps add up to the formula on the final result. Changing the formula keeps what the network has learned.'
+    : 'The reward arrives once, at the end of each episode. Changing the formula keeps what the network has learned, so you can reshape behaviour while it trains.';
   $('presets').innerHTML = '';
   g.presets.forEach(([name, f]) => {
     const b = document.createElement('button'); b.textContent = name; b.dataset.f = f;
@@ -125,6 +134,7 @@ function showGame(key, formula) {
   renderWorld(); renderLook();
 }
 function setup() {
+  liveOff();
   stage.clear(); S.pending = false; S.shownIter = -1; S.snap = null;
   send({ t: 'setup', game: S.game, formula: $('formula').value, net: S.net, algo: S.algo, hp: S.hp, settings: worlds()[S.game] || {} });
 }
@@ -164,7 +174,8 @@ function onStats(m) {
   $('sIter').textContent = m.iter; $('sEps').textContent = fmtInt(m.episodes); $('sBest').textContent = fmt(m.best);
   $('sStat').textContent = stage.stat(S.game, m.bestM);
   const per = m.secs > 0 ? (S.hp.episodes / m.secs) : 0;
-  $('speedNote').textContent = `${m.secs.toFixed(2)} s per update, about ${per.toFixed(0)} episodes a second` + (m.kl !== undefined ? ` · KL ${m.kl.toFixed(4)} · clipped ${(m.clipFrac * 100).toFixed(0)}%` : '');
+  $('speedNote').textContent = `${m.secs.toFixed(2)} s per update, about ${per.toFixed(0)} episodes a second` + (m.kl !== undefined ? ` · KL ${m.kl.toFixed(4)} · clipped ${(m.clipFrac * 100).toFixed(0)}%` : '')
+    + (m.groups ? ` · ${m.flatGroups} of ${m.groups} groups all scored the same (no signal)` : '');
   vars(); drawCurves();
   if (S.idle) requestReplay();
 }
@@ -222,6 +233,7 @@ function onReplay(m) {
 let last = 0;
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000 || 0); last = now;
+  if (S.live) { stage.liveTick(dt); requestAnimationFrame(frame); return; }
   const done = stage.tick(dt * S.speed);
   if (done && !S.pending) {
     // the replay is over: fetch something newer, or the next policy test
@@ -231,6 +243,53 @@ function frame(now) {
   }
   requestAnimationFrame(frame);
 }
+
+// ---------- live play: the network walks in real time and you get in its way ----------
+function liveOff() {
+  if (S.live) send({ t: 'live', on: false });
+  S.live = false; S.liveWanted = false;
+  $('livePanel').classList.remove('on'); $('liveBtn').textContent = '▶ Play live'; $('liveStat').textContent = '';
+  $('liveWind').value = 0; $('liveWindV').textContent = 'calm';
+}
+function onLive(m) {
+  if (!S.liveWanted && m.kind !== 'off') return;
+  if (m.kind === 'reset') {
+    if (!S.live) { S.live = true; $('livePanel').classList.add('on'); $('liveBtn').textContent = '■ Stop live'; }
+    stage.liveReset(m);
+    $('caption').textContent = `Live · the network after ${m.iter} update${m.iter === 1 ? '' : 's'}${m.noise ? ', with exploration noise' : ''}`;
+    const w = +$('liveWind').value; if (w) send({ t: 'poke', kind: 'wind', value: w });  // keep the wind blowing into the next episode
+  } else if (m.kind === 'chunk') {
+    stage.liveChunk(m);
+    $('liveStat').textContent = `${fmt(m.m.distance)} m · reward ${fmt(m.reward)}`;
+  } else if (m.kind === 'end') {
+    stage.liveEnd(m.m);
+    $('liveStat').textContent = (m.m.fell ? `Fell after ${fmt(m.m.distance)} m` : `Made it ${fmt(m.m.distance)} m`) + ` · reward ${fmt(m.reward)} · next run starting`;
+  } else if (m.kind === 'off') { S.live = false; }
+}
+const poke = (kind, value, x) => { if (S.live) send({ t: 'poke', kind, value, x }); };
+$('liveBtn').onclick = () => {
+  if (S.live || S.liveWanted) { liveOff(); S.pending = false; S.idle = true; return; }
+  S.liveWanted = true; $('liveBtn').textContent = 'Starting…';
+  send({ t: 'live', on: true, noise: $('liveNoise').checked });
+};
+$('liveNoise').onchange = () => { if (S.live) send({ t: 'live', on: true, noise: $('liveNoise').checked }); };
+document.querySelectorAll('[data-poke]').forEach(b => b.onclick = () => poke(b.dataset.poke, +(b.dataset.v || 0)));
+$('liveWind').oninput = () => {
+  const v = +$('liveWind').value;
+  $('liveWindV').textContent = v ? `${v > 0 ? '→' : '←'} ${Math.abs(v)} N` : 'calm';
+  poke('wind', v);
+};
+// click the ground to drop a crate right there
+$('stage').addEventListener('click', e => { if (S.live) poke('crate', 0.4, stage.pick(e.clientX, e.clientY).x); });
+// while live, Space and the arrows belong to the walker, not to whichever button has focus
+const LIVE_KEYS = ['ArrowLeft', 'ArrowRight', ' '];
+document.addEventListener('keyup', e => { if (S.live && LIVE_KEYS.includes(e.key) && !e.target.closest('input, select, textarea')) e.preventDefault(); });
+document.addEventListener('keydown', e => {
+  if (!S.live || e.target.closest('input, select, textarea')) return;
+  if (e.key === 'ArrowLeft') { poke('shove', -160); e.preventDefault(); }
+  else if (e.key === 'ArrowRight') { poke('shove', 160); e.preventDefault(); }
+  else if (e.key === ' ') { poke('crate', 0.4); e.preventDefault(); }
+});
 
 // ---------- scene ----------
 // World settings change the physics on the server; looks only change the picture and stay in this browser.
@@ -414,8 +473,9 @@ function chart(canvas, series, opts) {
 }
 function drawCurves() {
   chart($('curve'), [{ key: 'mean', color: col.muted, width: 1.5 }, { key: 'best', color: col.accent, width: 2.5 }], { empty: 'The curve appears after the first update. Press Train.' });
-  const none = { std: 'Evolution does not use exploration noise.', pl: 'Evolution has no policy loss.', vl: 'Only PPO and REINFORCE train a critic.', ent: 'Only PPO and REINFORCE report entropy.' };
-  chart($('sig'), [{ key: S.sig, color: col.deep, width: 2 }], { empty: S.algo === 'es' ? none[S.sig] : 'Appears after the first update.' });
+  const none = { std: 'Evolution does not use exploration noise.', pl: 'Evolution has no policy loss.', vl: 'Only PPO and REINFORCE train a critic.', ent: 'Evolution does not report entropy.' };
+  const missing = S.algo === 'es' || (S.sig === 'vl' && S.algo === 'grpo');
+  chart($('sig'), [{ key: S.sig, color: col.deep, width: 2 }], { empty: missing ? none[S.sig] : 'Appears after the first update.' });
 }
 
 // ---------- checkpoints ----------

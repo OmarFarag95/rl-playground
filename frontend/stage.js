@@ -34,6 +34,15 @@ export const LOOKS = {
     { key: 'toppings', label: 'Toppings', type: 'select', options: [['', 'Plain dough'], ['margherita', 'Margherita'], ['pepperoni', 'Pepperoni'], ['olives', 'Olives']] },
     { key: 'wall', label: 'Kitchen wall', type: 'swatch', token: 'wall', options: [null, '#F3E1C7', '#CDE7D3', '#F4C9C1', '#34404D'] },
   ],
+  walker: [
+    { key: 'shirt', label: 'Shirt', type: 'swatch', token: 'accent', options: [null, '#2B59D9', '#1E9E5A', '#E8B90E', '#B03BD1', '#1B1B1F'] },
+    { key: 'pants', label: 'Trousers', type: 'swatch', options: [hex(KID.jeans), '#2A2A2E', '#8A6A4A', '#C8322A', '#E7E2D6'] },
+    { key: 'skin', label: 'Skin', type: 'swatch', options: [hex(KID.skin), '#E0AC84', '#B97A56', '#8D5524', '#5C3A21'] },
+    { key: 'hair', label: 'Hair', type: 'swatch', options: [hex(KID.hair), '#17110E', '#D6B05E', '#B5532C', '#A3A3A3'] },
+    { key: 'glasses', label: 'Glasses', type: 'check', def: true },
+    { key: 'ground', label: 'Ground', type: 'select', options: [['', 'Grass'], ['#D9C48A', 'Desert'], ['#EEF3F6', 'Snow'], ['#8C8C8C', 'Moon rock']] },
+    TIME,
+  ],
   sandwich: [
     { key: 'table', label: 'Table', type: 'select', options: [['', 'White board'], ['wood', 'Wooden table'], ['picnic', 'Picnic cloth']] },
     { key: 'cheese', label: 'Cheese', type: 'select', options: [['', 'Cheddar'], ['swiss', 'Swiss']] },
@@ -439,6 +448,123 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
     stat: m => m.coverage.toFixed(0) + '%',
   };
 
+  // ----- walker: a two-legged ragdoll on rough ground, with crates, wind and shoves -----
+  // frame layout: (x, y, angle) for torso, left thigh, left shin, right thigh, right shin
+  const WK = { torso: [0.34, 0.62], thigh: [0.13, 0.46], shin: [0.11, 0.46], foot: [0.28, 0.07] };
+  games.walker = {
+    solo: true,
+    prep(s) {
+      s.ev = (s.events || []).filter(e => e.k === 'shove').map(e => ({ t: e.t, k: 'shove', v: e.v }));
+      if (s.m && s.m.fell) s.ev.push({ t: s.E, k: 'fall' });
+      s.ev.forEach(e => { e.done = false; });
+    },
+    build() {
+      const g = this.group = new THREE.Group();
+      const shirt = lm('walker', 'shirt', 'accent'), pants = lm('walker', 'pants', hex(KID.jeans)), skin = lm('walker', 'skin', hex(KID.skin));
+      const far = lam(0x2F4A78), shoe = lam(KID.shoe);
+      this.groundTop = lm('walker', 'ground', 'grass'); this.groundSide = lam(0x7A5A3A);
+      this.terrainMesh = null;
+      const part = () => { const p = new THREE.Group(); g.add(p); return p; };
+      const box = (p, w, h, d, m, x = 0, y = 0) => { const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); b.position.set(x, y, 0); p.add(b); return b; };
+      const torso = part();
+      box(torso, WK.torso[0], WK.torso[1], 0.3, shirt);
+      this.head = kidHead(torso, WK.torso[1] / 2 + 0.27, {}, false, { skin, hair: lm('walker', 'hair', hex(KID.hair)) });
+      // arms hang from the shoulders and swing with the legs (for looks only)
+      this.arms = [1, -1].map(sd => { const a = limb(0.05, 0.52, skin); a.position.set(0, WK.torso[1] / 2 - 0.06, sd * 0.2); const sl = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.065, 0.18, 10), shirt); sl.position.y = -0.07; a.add(sl); torso.add(a); return a; });
+      const legs = [0, 1].map(k => {
+        const m = k ? far : pants, z = k ? -0.1 : 0.1;
+        const thigh = part(); box(thigh, WK.thigh[0], WK.thigh[1], 0.13, m).position.z = z;
+        const shin = part(); box(shin, WK.shin[0], WK.shin[1], 0.11, m).position.z = z;
+        box(shin, WK.foot[0], WK.foot[1], 0.12, shoe, 0.07, -WK.shin[1] / 2 - WK.foot[1] / 2).position.z = z;
+        return [thigh, shin];
+      });
+      this.parts = [torso, legs[0][0], legs[0][1], legs[1][0], legs[1][1]];
+      this.crates = [];
+      this.crateMat = tm('board');
+      this.arrow = new THREE.Group();
+      const am = tm('accent'); const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.7, 10), am); shaft.rotation.z = Math.PI / 2; this.arrow.add(shaft);
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.28, 12), am); tip.rotation.z = -Math.PI / 2; tip.position.x = 0.48; this.arrow.add(tip);
+      this.arrow.visible = false; g.add(this.arrow);
+      const wg = new THREE.BufferGeometry(); this.windPos = new Float32Array(90 * 3); wg.setAttribute('position', new THREE.BufferAttribute(this.windPos, 3));
+      this.windSeed = Array.from({ length: 90 }, () => [rnd(), rnd() * 4, (rnd() - 0.5) * 3]);
+      this.wind = new THREE.Points(wg, new THREE.PointsMaterial({ color: 0xffffff, size: 0.07, transparent: true, opacity: 0.85 })); this.wind.frustumCulled = false; g.add(this.wind);
+      this.camX = 0; this.camY = 1;
+      this.act = [];
+    },
+    look(v) { this.head.glasses.visible = !!v.glasses; },
+    // the ground, rebuilt whenever an episode brings a new course
+    setTerrain(pts) {
+      if (this.terrainPts === pts) return;
+      this.terrainPts = pts;
+      if (this.terrainMesh) { this.group.remove(this.terrainMesh); this.terrainMesh.geometry.dispose(); }
+      const sh = new THREE.Shape();
+      sh.moveTo(pts[0], -4);
+      for (let i = 0; i < pts.length; i += 2) sh.lineTo(pts[i], pts[i + 1]);
+      sh.lineTo(pts[pts.length - 2], -4); sh.closePath();
+      const geo = new THREE.ExtrudeGeometry(sh, { depth: 3, bevelEnabled: false });
+      geo.translate(0, 0, -1.5);
+      this.terrainMesh = new THREE.Mesh(geo, [this.groundSide, this.groundTop]);
+      this.terrainMesh.receiveShadow = true;
+      this.group.add(this.terrainMesh);
+    },
+    groundAt(x) {
+      const p = this.terrainPts; if (!p) return 0;
+      for (let i = 2; i < p.length; i += 2) if (p[i] >= x) { const u = (x - p[i - 2]) / (p[i] - p[i - 2] || 1); return p[i - 1] + (p[i + 1] - p[i - 1]) * u; }
+      return p[p.length - 1];
+    },
+    frameAt(s, t) { const n = s.fr.length / 15; return Math.max(0, Math.min(n - 1, t * 60)); },
+    windAt(s, t) { let w = 0; (s.winds || []).forEach(([wt, f]) => { if (wt <= t) w = f; }); return w; },
+    update(sims, t) {
+      const s = sims[0];
+      if (!s || !s.fr.length) return;
+      this.setTerrain(s.terrain);
+      const L = lerpFrames(s.fr, 15, t);
+      this.parts.forEach((p, k) => { p.position.set(L(k * 3), L(k * 3 + 1), 0); p.rotation.z = L(k * 3 + 2); p.visible = true; });
+      // arms swing opposite to the legs
+      const swing = (L(5) - L(11)) * 0.6;
+      this.arms[0].rotation.z = -swing - 0.1; this.arms[1].rotation.z = swing - 0.1;
+      // crates: those born by this frame, in order
+      const f = Math.round(this.frameAt(s, t)), cf = (s.cfr && s.cfr[Math.min(f, s.cfr.length - 1)]) || [], list = s.crates || [];
+      while (this.crates.length < list.length) { const c = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), this.crateMat); c.castShadow = c.receiveShadow = true; this.group.add(c); this.crates.push(c); }
+      this.crates.forEach((c, j) => {
+        const alive = j < list.length && j * 3 + 2 < cf.length;
+        c.visible = alive; if (!alive) return;
+        const z = list[j].size; c.scale.set(z, z, z * 1.6); c.position.set(cf[j * 3], cf[j * 3 + 1], 0); c.rotation.z = cf[j * 3 + 2];
+      });
+      // camera follows the torso
+      const tx = L(0), ty = this.groundAt(tx);
+      this.camX += (tx - this.camX) * 0.12; this.camY += (ty - this.camY) * 0.08;
+      cam.position.set(this.camX + 1.0, this.camY + 2.0, 7.2); cam.lookAt(this.camX + 1.0, this.camY + 0.9, 0);
+      sun.position.set(this.camX + 7, 14, 9); sun.target.position.set(this.camX + 3, 0, 0);
+      // shove arrow, for half a second after each shove
+      const sh = (s.events || []).filter(e => e.k === 'shove' && t >= e.t && t < e.t + 0.5).pop();
+      this.arrow.visible = !!sh;
+      if (sh) { const d = Math.sign(sh.v) || 1; this.arrow.position.set(tx - d * 0.75, L(1) + 0.15, 0.3); this.arrow.rotation.y = d > 0 ? 0 : Math.PI; }
+      // wind streaks drifting across the view
+      const w = this.windAt(s, t); this.wind.visible = Math.abs(w) > 5;
+      if (this.wind.visible) {
+        const now_ = now(), sp = w / 40;
+        this.windSeed.forEach(([u, h, z], i) => { const span = 14, x = this.camX - 6 + ((u * span + now_ * sp) % span + span) % span; this.windPos[i * 3] = x; this.windPos[i * 3 + 1] = this.camY + 0.2 + h; this.windPos[i * 3 + 2] = z; });
+        this.wind.geometry.attributes.position.needsUpdate = true;
+      }
+    },
+    event(s, i, k) {
+      const L = lerpFrames(s.fr, 15, clock);
+      if (k === 'shove') boom(10);
+      else if (k === 'fall') { boom(26); burst(L(0), this.groundAt(L(0)) + 0.1, 0, 40, 2.2, 'board', true); }
+    },
+    labels(s, t) {
+      if (!s || !s.fr.length) return [];
+      const L = lerpFrames(s.fr, 15, t), x = L(0), y = L(1), out = [];
+      const d = x - (s.fr[0] || 0);
+      out.push([x, y + 1.05, (s.m && s.m.fell && t >= s.E) ? `Fell after ${d.toFixed(1)} m` : `${d.toFixed(1)} m`]);
+      const w = this.windAt(s, t); if (Math.abs(w) > 5) out.push([this.camX + 2.8, this.camY + 3.2, `Wind ${w > 0 ? '→' : '←'} ${Math.abs(w).toFixed(0)} N`]);
+      const sh = (s.events || []).filter(e => e.k === 'shove' && t >= e.t && t < e.t + 0.8).pop(); if (sh) out.push([x - 0.4, y + 1.55, 'Shove!']);
+      return out;
+    },
+    stat: m => m.fell ? `${m.distance.toFixed(1)} m, fell` : `${m.distance.toFixed(1)} m`,
+  };
+
   // ----- setup -----
   Object.values(games).forEach(g => { g.build(); g.group.visible = false; scene.add(g.group); });
   [[-1, 7.6, -9, 1.5], [6, 8.8, -11, 2], [11, 6.9, -9, 1.3], [3, 6.2, -12, 1.1]].forEach(([x, y, z, r]) => {
@@ -527,7 +653,8 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
     sound,
     setGame(key) {
       if (game) game.group.visible = false;
-      game = games[key]; game.group.visible = true; backdrop.visible = key !== 'pizza'; applyTime();
+      game = games[key]; game.group.visible = true;
+      sun.position.set(7, 14, 9); sun.target.position.set(3, 0, 0);  // the walker moves the sun with its camera backdrop.visible = key !== 'pizza'; applyTime();
       canvas.hidden = !!game.flat; flat.hidden = !game.flat;
       disp = []; parts = []; clock = 0;
       resize();
@@ -558,6 +685,33 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
       return clock > endTime();
     },
     setShowAll(v) { showAll = v; draw(); },
+    // ----- live play: the server streams an episode while it happens -----
+    liveReset(r) {
+      const ep = { fr: [], cfr: [], crates: [], events: [], winds: [], terrain: r.terrain, m: { distance: 0, fell: 0 }, E: 1e9, T: 1e9, live: true };
+      game.prep(ep); disp = [ep]; disp.hasFirst = false; clock = 0; parts = [];
+      if (game.camX !== undefined) { game.camX = 0; game.camY = 1; }
+    },
+    liveChunk(c) {
+      const ep = disp[0]; if (!ep || !ep.live) return;
+      ep.fr.push(...c.fr); ep.cfr.push(...c.cfr); ep.crates = c.crates; ep.m = c.m;
+      c.events.forEach(e => { ep.events.push(e); if (e.k === 'shove') ep.ev.push({ t: e.t, k: 'shove', v: e.v }); });
+      ep.winds.push(...c.winds);
+    },
+    liveEnd(m) { const ep = disp[0]; if (!ep || !ep.live) return; ep.m = m; ep.E = ep.fr.length / 15 / 60; if (m.fell) ep.ev.push({ t: ep.E, k: 'fall' }); },
+    // live playback: keep just behind the newest frame
+    liveTick(dt) {
+      const ep = disp[0]; if (!ep || !ep.live) return;
+      const have = ep.fr.length / 15 / 60;
+      let target = Math.min(clock + dt, have);
+      if (have - target > 0.4) target = have - 0.1;  // fell behind: catch up
+      this.tick(Math.max(0, target - clock));
+    },
+    // where a click on the stage lands, on the plane of the game (z = 0)
+    pick(cx, cy) {
+      const r = canvas.getBoundingClientRect(), v = new THREE.Vector3(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1, 0.5).unproject(cam);
+      const dir = v.sub(cam.position).normalize(), k = -cam.position.z / dir.z;
+      return { x: cam.position.x + dir.x * k, y: cam.position.y + dir.y * k };
+    },
     // dress a game's scene; `v` holds LOOKS options, missing ones fall back to their defaults
     setLook(key, v) {
       looks[key] = { ...lookDefaults(key), ...v };
