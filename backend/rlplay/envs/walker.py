@@ -133,13 +133,15 @@ class Walker(Env):
         for g in self.ground:
             self.space.remove(g)
         rough = self.cfg["rough"]
-        xs = np.arange(-6.0, 120.0, 0.8)
+        xs = np.arange(-60.0, 120.0, 0.8)  # room behind too, for walking backwards
         h = np.zeros(len(xs))
-        y = 0.0
-        for i, x in enumerate(xs):
-            if x > 2.0:  # a flat start, then a gentle random walk with bumps
-                y = clamp(y + rng.normal(0, rough * 0.6), -1.5, 1.5) * 0.97
-                h[i] = y + rng.uniform(-rough, rough) * 0.5
+        start = int(np.searchsorted(xs, 0.0))
+        for order in (range(start, len(xs)), range(start - 1, -1, -1)):
+            y = 0.0
+            for i in order:
+                if abs(xs[i]) > 2.0:  # a flat start, then a gentle random walk with bumps
+                    y = clamp(y + rng.normal(0, rough * 0.6), -1.5, 1.5) * 0.97
+                    h[i] = y + rng.uniform(-rough, rough) * 0.5
         self.tx, self.ty = xs, h
         body = self.space.static_body
         self.ground = []
