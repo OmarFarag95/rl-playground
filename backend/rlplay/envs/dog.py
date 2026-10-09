@@ -39,8 +39,21 @@ class Dog(Env):
     obs_names = ["dog x", "dog y", "dog vx", "dog vy", "sin tilt", "cos tilt", "spin rate", "has jumped",
                  "time", "frisbee dx", "frisbee dy", "frisbee vx", "frisbee vy", "frisbee landed"]
     act_names = ["run speed", "jump now", "jump power", "spin"]
+    settings = [
+        ("throw", "Throw strength", "How hard the frisbee is thrown, × normal", 0.7, 1.3, 0.05, 1.0),
+        ("float", "Frisbee float", "Higher floats longer before it drops, × normal", 0.6, 1.6, 0.05, 1.0),
+        ("run_speed", "Dog top speed", "Fastest the dog can run, m/s", 3.0, 10.0, 0.1, 7.0),
+        ("jump", "Jump power", "How high the dog can spring, × normal", 0.6, 1.5, 0.05, 1.0),
+    ]
+    setting_presets = [
+        ("Long throws", {"throw": 1.3, "float": 1.4}),
+        ("Floaty frisbee", {"float": 1.6}),
+        ("Puppy", {"run_speed": 4, "jump": 0.7}),
+        ("Super dog", {"run_speed": 10, "jump": 1.5}),
+    ]
 
     def __init__(self):
+        super().__init__()
         s = self.space = pymunk.Space()
         s.gravity = (0, -9.81)
         s.iterations = 12
@@ -54,11 +67,13 @@ class Dog(Env):
         s.add(self.body, self.box)
 
     def reset(self, rng):
-        self.fvx = float(rng.uniform(3.4, 5.0))
-        self.fvy = float(rng.uniform(2.8, 4.4))
-        self.fa = float(rng.uniform(2.2, 2.8))
+        cf = self.cfg
+        self.fvx = float(rng.uniform(3.4, 5.0)) * cf["throw"]
+        self.fvy = float(rng.uniform(2.8, 4.4)) * cf["throw"]
+        self.fa = float(rng.uniform(2.2, 2.8)) / cf["float"]
         c = 1.6 - 0.03
         self.tf = (self.fvy + math.sqrt(self.fvy ** 2 + 4 * self.fa * c)) / (2 * self.fa)
+        self.max_t = max(MAX_T, self.tf + 2.5)
         b = self.body
         b.position = (X0, HY)
         b.velocity = (0, 0)
@@ -114,7 +129,7 @@ class Dog(Env):
     def step(self, a):
         b = self.body
         if not self.jumped:
-            self.speed = 7.0 * u01(a[0])
+            self.speed = self.cfg["run_speed"] * u01(a[0])
             if self.w < 0 and self.speed > 0.3:
                 self.w = self.t
             if a[1] > 0 and self.t > 0.05:
@@ -122,7 +137,7 @@ class Dog(Env):
                 self.tj = self.t
                 self.run_d = b.position.x - X0
                 self.th_jump = b.angle
-                b.velocity = (self.speed, 2 + 5 * u01(a[2]))
+                b.velocity = (self.speed, (2 + 5 * u01(a[2])) * self.cfg["jump"])
                 b.angular_velocity = -14 * u01(a[3])
         for _ in range(SUBSTEPS):
             if self._substep():
@@ -169,7 +184,7 @@ class Dog(Env):
                 return True
         if not self.jumped and t > self.tf + 0.3:
             return True
-        return t >= MAX_T
+        return t >= self.max_t
 
     def metrics(self):
         caught = 1.0 if self.tc >= 0 else 0.0

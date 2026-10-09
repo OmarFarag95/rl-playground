@@ -23,11 +23,15 @@ fastest on a few threads).
    training pauses when it gets there (0 means no limit). The thin bar below it tracks the current update:
    first playing its episodes, then learning from them. Then watch. *Training episodes* shows the latest batch, exploration noise included.
    *Test the policy* runs fresh episodes with the noise turned off.
-6. **Save a checkpoint** to `checkpoints/`. A checkpoint holds the weights, network, settings, formula and history.
+6. **Tune the scene.** *World* sliders change the physics: board height and gravity for the diver, throw and
+   jump strength for the dog, ceiling height and draught for the chef, how slippery the sandwich fillings are.
+   You can change them while training, and the network adapts. *Look* only changes the picture: swimsuits,
+   fur, a party hat, pizza toppings, the table, the time of day. Looks are remembered in your browser.
+7. **Save a checkpoint** to `checkpoints/`. A checkpoint holds the weights, network, settings, world, formula and history.
 
 ## The games
 
-| Game | The network sees | The network decides | Changes every episode |
+| Game | The network sees | The network decides | Changes every episode (defaults; tune them under Scene) |
 |---|---|---|---|
 | Diver | body pose, spin, height, speed | take-off power, drive and spin, then hips, knees and arms 20× a second | board height 1–3 m |
 | Frisbee dog | the dog and the frisbee | running speed 20× a second, then when to jump, how high, how much spin | the throw |

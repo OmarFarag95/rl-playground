@@ -42,8 +42,22 @@ class Pizza(Env):
     obs_names = ["toss phase", "ceiling height", "draught", "dough dx", "dough dy", "dough vx", "dough vy",
                  "sin tilt", "cos tilt", "tilt rate", "hands x", "hands y", "time"]
     act_names = ["power / hands x", "spin / hands y", "wobble", "drift"]
+    settings = [
+        ("ceil_min", "Lowest ceiling", "The ceiling height is drawn between these two each episode, m", 2.4, 6.0, 0.1, 3.0),
+        ("ceil_max", "Highest ceiling", "Set both to the same value for a fixed ceiling, m", 2.4, 6.0, 0.1, 4.3),
+        ("wind", "Strongest draught", "The draught blows up to this hard, either way. 0 shuts the window", 0.0, 2.0, 0.05, 0.8),
+        ("stretch", "Dough stretch", "How much the spin widens the dough, × normal. It tears past 80 cm", 0.5, 2.0, 0.05, 1.0),
+    ]
+    setting_presets = [
+        ("Low kitchen", {"ceil_min": 2.4, "ceil_max": 2.8}),
+        ("Cathedral", {"ceil_min": 5.5, "ceil_max": 6}),
+        ("Gale", {"wind": 2}),
+        ("Still air", {"wind": 0}),
+        ("Stretchy dough", {"stretch": 2}),
+    ]
 
     def __init__(self):
+        super().__init__()
         s = self.space = pymunk.Space()
         s.gravity = (0, -G)
         s.iterations = 12
@@ -66,8 +80,9 @@ class Pizza(Env):
         self.dough, self.dough_shape = b, sh
 
     def reset(self, rng):
-        self.ceil = float(rng.uniform(3.0, 4.3))
-        self.wind = float(rng.uniform(-0.8, 0.8))
+        self.ceil = self.uniform(rng, "ceil_min", "ceil_max")
+        w = self.cfg["wind"]
+        self.wind = float(rng.uniform(-w, w))
         self.hands.position = (X0, H0 - 0.06)
         self.hands.velocity = (0, 0)
         self._make_dough(0.12)
@@ -100,7 +115,7 @@ class Pizza(Env):
             vy, self.om, wob, vx = 2 + 6.5 * g[0], 2 + 20 * g[1], g[2], (g[3] - 0.5) * 2.4
             top = self.ceil - 0.03 - H0
             tau = (vy - math.sqrt(vy * vy - 2 * G * top)) / G if vy * vy / (2 * G) > top else 2 * vy / G
-            self.r = 0.12 + 0.014 * self.om * tau
+            self.r = 0.12 + 0.014 * self.cfg["stretch"] * self.om * tau
             self._make_dough(self.r)
             self.dough.position = (X0, H0 + 0.05)
             self.dough.velocity = (vx, vy)

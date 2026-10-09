@@ -5,7 +5,6 @@ import numpy as np
 from .base import Env, rounded
 
 PIECES = ["lettuce", "ham", "cheese", "tomato", "top slice"]
-SLIDE = 0.05      # pieces slide a little when they land
 REACH = 0.8
 
 
@@ -35,10 +34,21 @@ class Sandwich(Env):
     obs_names = ([f"next: {p}" for p in PIECES] + ["bread x", "bread y"]
                  + [f"{p} {c}" for p in PIECES[:4] for c in ("x", "y", "turn")])
     act_names = ["drop x", "drop y", "turn"]
+    settings = [
+        ("bread", "Bread wander", "How far from the centre the bread can sit, m", 0.0, 0.4, 0.01, 0.18),
+        ("slide", "Slippery fillings", "How far a piece slides after it lands, m", 0.0, 0.25, 0.01, 0.05),
+        ("twist", "Twisty fillings", "How much a piece turns by itself when it lands, degrees", 0.0, 30.0, 0.5, 3.5),
+    ]
+    setting_presets = [
+        ("Steady hands", {"bread": 0, "slide": 0, "twist": 0}),
+        ("Butter fingers", {"slide": 0.25, "twist": 30}),
+        ("Wandering bread", {"bread": 0.4}),
+    ]
 
     def reset(self, rng):
         self.rng = rng
-        self.bx, self.by = (float(v) for v in rng.uniform(-0.18, 0.18, 2))
+        b = self.cfg["bread"]
+        self.bx, self.by = (float(v) for v in rng.uniform(-b, b, 2))
         self.items = []
         return self._obs()
 
@@ -54,8 +64,9 @@ class Sandwich(Env):
 
     def step(self, a):
         n = self.rng.normal(0, 1, 3)
-        self.items.append({"x": float(a[0]) * REACH + SLIDE * n[0], "y": float(a[1]) * REACH + SLIDE * n[1],
-                           "r": float(a[2]) * math.pi / 2 + 0.06 * n[2]})
+        sl, tw = self.cfg["slide"], math.radians(self.cfg["twist"])
+        self.items.append({"x": float(a[0]) * REACH + sl * n[0], "y": float(a[1]) * REACH + sl * n[1],
+                           "r": float(a[2]) * math.pi / 2 + tw * n[2]})
         return self._obs(), len(self.items) == 5
 
     def metrics(self):

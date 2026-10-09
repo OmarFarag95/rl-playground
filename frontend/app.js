@@ -1,4 +1,4 @@
-import { createStage } from './stage.js';
+import { createStage, LOOKS, lookDefaults } from './stage.js';
 import { drawNet } from './netview.js';
 
 const $ = id => document.getElementById(id);
@@ -89,6 +89,7 @@ function on(m) {
       if (m.reached) toast(`Reached the goal of ${m.target} updates. Training paused.`);
       break;
     case 'progress': onProgress(m); break;
+    case 'settings': onSettings(m); break;
     case 'formula':
       if (m.ok) { $('err').textContent = ''; formulas()[S.game] = m.formula; store.set('formulas', formulas()); markPreset(); toast('New reward formula in use. The network keeps what it learned.'); }
       else $('err').textContent = m.msg;
@@ -120,10 +121,12 @@ function showGame(key, formula) {
   $('formula').value = formula ?? (formulas()[key] || g.presets[0][1]);
   $('err').textContent = '';
   stage.setGame(key);
+  stage.setLook(key, looks()[key] || {});
+  renderWorld(); renderLook();
 }
 function setup() {
   stage.clear(); S.pending = false; S.shownIter = -1; S.snap = null;
-  send({ t: 'setup', game: S.game, formula: $('formula').value, net: S.net, algo: S.algo, hp: S.hp });
+  send({ t: 'setup', game: S.game, formula: $('formula').value, net: S.net, algo: S.algo, hp: S.hp, settings: worlds()[S.game] || {} });
 }
 function onReady(m) {
   S.snap = null;
@@ -137,6 +140,7 @@ function onReady(m) {
     else if (m.iteration) toast(`Picked up where you left off at update ${m.iteration}${m.running ? ', still training' : ''}.`);
   }
   S.hp = m.hp; S.algo = m.algo; store.set('hp', S.hp); store.set('algo', S.algo);
+  if (m.settings) { worlds()[m.game] = m.settings; store.set('worlds', worlds()); renderWorld(); }
   S.history = m.history || []; S.iter = m.iteration; S.lastStats = m.last || null;
   $('sIter').textContent = m.iteration; $('sEps').textContent = fmtInt(m.episodes);
   $('sBest').textContent = S.lastStats ? fmt(S.lastStats.best) : '–';
@@ -200,7 +204,8 @@ function showProgress() {
 function requestReplay(mode) {
   if (S.pending) return;
   mode = mode || S.view;
-  if (mode === 'train' && S.iter === 0) mode = 'eval';
+  // training episodes from before the first update, or from before a world change, have nothing new to show
+  if (mode === 'train' && (S.iter === 0 || S.worldIter === S.iter)) mode = 'eval';
   if (mode === 'train' && S.shownIter === S.iter && !S.idle) return;
   S.pending = true; send({ t: 'replay', mode, n: 20 });
 }
@@ -226,6 +231,86 @@ function frame(now) {
   }
   requestAnimationFrame(frame);
 }
+
+// ---------- scene ----------
+// World settings change the physics on the server; looks only change the picture and stay in this browser.
+const worlds = () => (S._w ||= store.get('worlds', {}));
+const looks = () => (S._l ||= store.get('looks', {}));
+const worldDefaults = () => Object.fromEntries(G().settings.map(o => [o.key, o.default]));
+const decimals = step => (String(step).split('.')[1] || '').length;
+function sendWorld(settings) { worlds()[S.game] = settings; store.set('worlds', worlds()); renderWorld(); send({ t: 'settings', settings }); }
+function renderWorld() {
+  const g = G(), cur = { ...worldDefaults(), ...(worlds()[S.game] || {}) }, box = $('world');
+  $('worldPresets').innerHTML = '';
+  [['Standard', {}], ...(g.settingPresets || [])].forEach(([name, p]) => {
+    const want = { ...worldDefaults(), ...p }, b = document.createElement('button');
+    b.className = 'small'; b.textContent = name;
+    b.setAttribute('aria-pressed', g.settings.every(o => Math.abs(want[o.key] - cur[o.key]) < 1e-9));
+    b.onclick = () => sendWorld(want);
+    $('worldPresets').appendChild(b);
+  });
+  box.innerHTML = '';
+  g.settings.forEach(o => {
+    const id = 'set_' + o.key, nd = decimals(o.step);
+    const lab = document.createElement('label'); lab.htmlFor = id; lab.innerHTML = `${o.label}<small>${o.help}</small>`;
+    const wrap = document.createElement('div'); wrap.className = 'slider';
+    const inp = document.createElement('input'); Object.assign(inp, { type: 'range', id, min: o.lo, max: o.hi, step: o.step, value: cur[o.key] });
+    const out = document.createElement('output'); out.htmlFor = id; out.textContent = (+cur[o.key]).toFixed(nd);
+    inp.oninput = () => { out.textContent = (+inp.value).toFixed(nd); };
+    inp.onchange = () => sendWorld({ ...cur, [o.key]: +inp.value });
+    wrap.append(inp, out); box.append(lab, wrap);
+  });
+}
+function onSettings(m) {
+  if (m.game !== S.game) return;
+  worlds()[S.game] = m.settings; store.set('worlds', worlds()); renderWorld();
+  toast(S.running ? 'New world in use from the next update. The network keeps what it learned.' : 'New world set. Here is the current policy trying it.');
+  // show the new world right away: until the next update, training episodes are still from the old one
+  S.worldIter = S.iter;
+  requestReplayNow();
+}
+function setLook(key, value) {
+  const v = { ...(looks()[S.game] || {}), [key]: value };
+  looks()[S.game] = v; store.set('looks', looks()); stage.setLook(S.game, v); renderLook();
+}
+function renderLook() {
+  const cur = { ...lookDefaults(S.game), ...(looks()[S.game] || {}) }, box = $('look');
+  box.innerHTML = '';
+  LOOKS[S.game].forEach(o => {
+    const id = 'look_' + o.key, lab = document.createElement('label');
+    lab.htmlFor = id; lab.textContent = o.label;
+    let ctl;
+    if (o.type === 'check') {
+      ctl = document.createElement('input'); Object.assign(ctl, { type: 'checkbox', id, checked: !!cur[o.key] });
+      ctl.onchange = () => setLook(o.key, ctl.checked);
+    } else if (o.type === 'select') {
+      ctl = document.createElement('select'); ctl.id = id;
+      ctl.innerHTML = o.options.map(([v, t]) => `<option value="${v}" ${v === cur[o.key] ? 'selected' : ''}>${t}</option>`).join('');
+      ctl.onchange = () => setLook(o.key, ctl.value);
+    } else {
+      // swatches, plus a picker for any other colour; null is the theme colour
+      ctl = document.createElement('div'); ctl.className = 'swatches'; ctl.setAttribute('role', 'group'); ctl.setAttribute('aria-label', o.label);
+      const shown = c => c || col[o.token] || '#888888';
+      o.options.forEach((c, k) => {
+        const b = document.createElement('button'); b.style.background = shown(c);
+        b.title = c ? c : 'Theme colour'; b.setAttribute('aria-label', `${o.label} ${k ? c : 'default'}`);
+        b.setAttribute('aria-pressed', cur[o.key] === c);
+        b.onclick = () => setLook(o.key, c);
+        ctl.appendChild(b);
+      });
+      const pick = document.createElement('input'); pick.type = 'color'; pick.id = id; pick.title = 'Any colour';
+      pick.value = /^#[0-9a-f]{6}$/i.test(shown(cur[o.key])) ? shown(cur[o.key]) : '#888888';
+      pick.onchange = () => setLook(o.key, pick.value.toUpperCase());
+      ctl.appendChild(pick);
+      lab.htmlFor = '';
+    }
+    box.append(lab, ctl);
+  });
+}
+$('sceneReset').onclick = () => {
+  delete looks()[S.game]; store.set('looks', looks()); stage.setLook(S.game, {}); renderLook();
+  sendWorld(worldDefaults());
+};
 
 // ---------- reward formula ----------
 let checkId = 0, checkT = 0;
@@ -386,8 +471,8 @@ function requestReplayNow() { S.shownIter = -1; S.idle = true; requestReplay(); 
 
 function readColors() {
   const s = getComputedStyle(document.documentElement);
-  ['accent', 'deep', 'ink', 'muted', 'line', 'panel'].forEach(n => col[n] = s.getPropertyValue('--' + n).trim());
-  stage.readColors(); drawCurves(); drawNetwork();
+  ['accent', 'deep', 'ink', 'muted', 'line', 'panel', 'wall'].forEach(n => col[n] = s.getPropertyValue('--' + n).trim());
+  stage.readColors(); drawCurves(); drawNetwork(); if (S.meta) renderLook();
 }
 let rT = 0;
 window.addEventListener('resize', () => { clearTimeout(rT); rT = setTimeout(() => { stage.resize(); drawCurves(); drawNetwork(); }, 60); });

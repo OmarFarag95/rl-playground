@@ -6,13 +6,56 @@ const GHOST = { transparent: true, opacity: 0.3, depthWrite: false };
 const KID = { skin: 0xF2C9A8, hair: 0x4A2E22, tee: 0x5B7FB5, jeans: 0x3F5E94, shoe: 0x3B4A8C, rim: 0x9AA3A8, eye: 0x3A241C };
 const FURS = [0xC8915A, 0x8A5A33, 0xE2C08E, 0x5E4630];
 const MAXG = 20; // actors per game (1 shown + up to 19 ghosts)
+const hex = c => '#' + c.toString(16).padStart(6, '0').toUpperCase();
+const TIME = { key: 'time', label: 'Time of day', type: 'select', options: [['day', 'Day'], ['sunset', 'Sunset'], ['night', 'Night']] };
+// Cosmetic options per game: they change the picture, never the physics. Only the main actor is dressed; ghosts stay plain.
+// A swatch's first option is the default; null there means the theme colour named by `token`.
+export const LOOKS = {
+  diver: [
+    { key: 'suit', label: 'Swimsuit', type: 'swatch', token: 'accent', options: [null, '#2B59D9', '#1E9E5A', '#E8B90E', '#B03BD1', '#1B1B1F'] },
+    { key: 'skin', label: 'Skin', type: 'swatch', options: [hex(KID.skin), '#E0AC84', '#B97A56', '#8D5524', '#5C3A21'] },
+    { key: 'hair', label: 'Hair', type: 'swatch', options: [hex(KID.hair), '#17110E', '#D6B05E', '#B5532C', '#A3A3A3'] },
+    { key: 'cap', label: 'Swim cap', type: 'check', def: false },
+    { key: 'glasses', label: 'Glasses', type: 'check', def: true },
+    { key: 'pool', label: 'Water', type: 'select', options: [['', 'Pool blue'], ['#27C9B8', 'Tropical'], ['#4E9B6B', 'Lagoon'], ['#2D3F8F', 'Deep sea']] },
+    TIME,
+  ],
+  dog: [
+    { key: 'fur', label: 'Fur', type: 'swatch', options: [...FURS.map(hex), '#F1ECE2', '#242022'] },
+    { key: 'collar', label: 'Collar', type: 'swatch', token: 'accent', options: [null, '#2B59D9', '#1E9E5A', '#F04FA0', '#1B1B1F'] },
+    { key: 'hat', label: 'Party hat', type: 'check', def: false },
+    { key: 'frisbee', label: 'Frisbee', type: 'swatch', token: 'accent', options: [null, '#F2D21B', '#2BB3E0', '#7ED957', '#F04FA0'] },
+    { key: 'shirt', label: "Thrower's shirt", type: 'swatch', options: [hex(KID.tee), '#D9481F', '#2E8B57', '#F2C230', '#7A4FB5'] },
+    TIME,
+  ],
+  pizza: [
+    { key: 'outfit', label: "Chef's clothes", type: 'swatch', options: ['#F7F7F2', '#1F1F24', '#C8322A', '#2E6FB5', '#3E8E4E'] },
+    { key: 'hat', label: 'Chef hat', type: 'check', def: true },
+    { key: 'toppings', label: 'Toppings', type: 'select', options: [['', 'Plain dough'], ['margherita', 'Margherita'], ['pepperoni', 'Pepperoni'], ['olives', 'Olives']] },
+    { key: 'wall', label: 'Kitchen wall', type: 'swatch', token: 'wall', options: [null, '#F3E1C7', '#CDE7D3', '#F4C9C1', '#34404D'] },
+  ],
+  sandwich: [
+    { key: 'table', label: 'Table', type: 'select', options: [['', 'White board'], ['wood', 'Wooden table'], ['picnic', 'Picnic cloth']] },
+    { key: 'cheese', label: 'Cheese', type: 'select', options: [['', 'Cheddar'], ['swiss', 'Swiss']] },
+    { key: 'toast', label: 'Toasted bread', type: 'check', def: false },
+  ],
+};
+export const lookDefaults = key => Object.fromEntries(LOOKS[key].map(o => [o.key, o.type === 'check' ? o.def : o.type === 'select' ? o.options[0][0] : o.options[0]]));
+// lighting for the time of day; day uses the theme's sky
+const TIMES = {
+  day: { sun: 0xffffff, si: 0.72, sy: 14, hemi: 0xffffff, ground: 0x6b8a94, hi: 0.62 },
+  sunset: { sky: '#F2A97E', sun: 0xFFB070, si: 0.62, sy: 4, hemi: 0xFFD2B0, ground: 0x7A5A6A, hi: 0.5 },
+  night: { sky: '#0E1838', sun: 0x9DB2FF, si: 0.22, sy: 14, hemi: 0x6F82B8, ground: 0x1A2236, hi: 0.3 },
+};
+const TOAST = 'sepia(0.3) saturate(1.7) brightness(0.8)';
 
 // `now` (optional) returns the time in seconds for idle animation such as waves; the video renderer passes its own clock.
-export function createStage({ canvas, flat, tags, onNoGL, now = () => performance.now() / 1000, gl = {} }) {
+// `onEvent(episode, index, kind)` (optional) hears every landing, catch or splash as it plays, e.g. to log sounds.
+export function createStage({ canvas, flat, tags, onNoGL, now = () => performance.now() / 1000, gl = {}, onEvent = null }) {
   let W = 0, H = 0, renderer = null, col = {}, game = null, games = {};
   let disp = [], clock = 0, showAll = false, compare = false, parts = [];
   const scene = new THREE.Scene(), cam = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x6b8a94, 0.62 * Math.PI));
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x6b8a94, 0.62 * Math.PI); scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xffffff, 0.72 * Math.PI);
   sun.position.set(7, 14, 9); sun.target.position.set(3, 0, 0); scene.add(sun, sun.target);
   sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.002; sun.shadow.normalBias = 0.03;
@@ -21,49 +64,58 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
   const lam = (c, o) => new THREE.MeshLambertMaterial(Object.assign({ color: c }, o || {}));
   const tinted = [];
   const tm = (token, o) => { const m = lam(0xffffff, o); tinted.push([m, token]); return m; };
+  // a material coloured by a look option: [material, game, option, fallback colour or theme token]
+  const looks = Object.fromEntries(Object.keys(LOOKS).map(k => [k, lookDefaults(k)])), looked = [];
+  const lm = (gk, key, fallback, o) => { const m = lam(0xffffff, o); looked.push([m, gk, key, fallback]); return m; };
+  const paintLooks = () => looked.forEach(([m, gk, k, fb]) => m.color.set(looks[gk][k] || col[fb] || fb));
   const blk = (g, w, h, d, m, x, y, z) => { const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); b.position.set(x, y, z); g.add(b); return b; };
   const limb = (r, h, m) => { const g = new THREE.Group(), c = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 0.85, h, 10), m); c.position.y = -h / 2; g.add(c); return g; };
   const vis = i => i === 0 || showAll || (compare && i === 1 && disp.hasFirst);
 
-  function kidHead(parent, y, g, hat) {
-    const skin = lam(KID.skin, g), hair = lam(KID.hair, g), rim = lam(KID.rim, g), eye = lam(KID.eye, g), R = 0.24;
-    const add = (geo, m, x, yy, z) => { const q = new THREE.Mesh(geo, m); q.position.set(x, y + yy, z || 0); parent.add(q); return q; };
+  // returns groups for the hair, glasses and hat, so a look can switch them on and off
+  function kidHead(parent, y, g, hat, mats = {}) {
+    const skin = mats.skin || lam(KID.skin, g), hair = mats.hair || lam(KID.hair, g), rim = lam(KID.rim, g), eye = lam(KID.eye, g), R = 0.24;
+    const head = { hair: new THREE.Group(), glasses: new THREE.Group(), hat: new THREE.Group() };
+    Object.values(head).forEach(p => parent.add(p));
+    const add = (geo, m, x, yy, z, to = parent) => { const q = new THREE.Mesh(geo, m); q.position.set(x, y + yy, z || 0); to.add(q); return q; };
     add(new THREE.SphereGeometry(R, 20, 16), skin, 0, 0);
     for (let k = 0; k < 26; k++) {
       const v = (k + 0.5) / 26, ph = Math.acos(1 - 1.25 * v), th = k * 2.39996, x = Math.sin(ph) * Math.cos(th), yy = Math.cos(ph), z = Math.sin(ph) * Math.sin(th);
       if (x > 0.55 && yy < 0.62) continue;
-      add(new THREE.SphereGeometry(0.085 + 0.02 * ((k * 7) % 3), 10, 8), hair, x * R * 0.98, yy * R * 0.98, z * R * 0.98);
+      add(new THREE.SphereGeometry(0.085 + 0.02 * ((k * 7) % 3), 10, 8), hair, x * R * 0.98, yy * R * 0.98, z * R * 0.98, head.hair);
     }
     [1, -1].forEach(sd => {
       add(new THREE.SphereGeometry(0.05, 10, 8), skin, -0.02, -0.03, sd * 0.245);
       add(new THREE.SphereGeometry(0.03, 10, 8), eye, 0.215, 0, sd * 0.095);
-      const ring = add(new THREE.TorusGeometry(0.075, 0.011, 8, 22), rim, 0.228, -0.005, sd * 0.095); ring.rotation.y = Math.PI / 2;
-      add(new THREE.BoxGeometry(0.2, 0.014, 0.014), rim, 0.11, 0.0, sd * 0.2);
+      const ring = add(new THREE.TorusGeometry(0.075, 0.011, 8, 22), rim, 0.228, -0.005, sd * 0.095, head.glasses); ring.rotation.y = Math.PI / 2;
+      add(new THREE.BoxGeometry(0.2, 0.014, 0.014), rim, 0.11, 0.0, sd * 0.2, head.glasses);
     });
-    add(new THREE.BoxGeometry(0.014, 0.014, 0.06), rim, 0.232, 0.0, 0);
+    add(new THREE.BoxGeometry(0.014, 0.014, 0.06), rim, 0.232, 0.0, 0, head.glasses);
     add(new THREE.SphereGeometry(0.03, 8, 8), skin, 0.245, -0.05, 0);
     if (hat) {
       const w = lam(0xFAFAF6, g);
-      add(new THREE.CylinderGeometry(0.2, 0.19, 0.2, 16), w, -0.02, 0.26);
-      add(new THREE.SphereGeometry(0.24, 14, 10), w, -0.02, 0.42).scale.y = 0.6;
+      add(new THREE.CylinderGeometry(0.2, 0.19, 0.2, 16), w, -0.02, 0.26, 0, head.hat);
+      add(new THREE.SphereGeometry(0.24, 14, 10), w, -0.02, 0.42, 0, head.hat).scale.y = 0.6;
     }
+    return head;
   }
+  // o.top / o.leg: materials for the clothes (default: a tee and jeans, or chef's whites with o.hat)
   function person(o) {
-    const g = o.ghost ? GHOST : {}, skin = lam(KID.skin, g), top = lam(o.hat ? 0xF7F7F2 : KID.tee, g), leg = lam(o.hat ? 0xF7F7F2 : KID.jeans, g), shoe = lam(KID.shoe, g), white = lam(0xFFFFFF, g);
+    const g = o.ghost ? GHOST : {}, skin = lam(KID.skin, g), top = o.top || lam(o.hat ? 0xF7F7F2 : KID.tee, g), leg = o.leg || lam(o.hat ? 0xF7F7F2 : KID.jeans, g), shoe = lam(KID.shoe, g), white = lam(0xFFFFFF, g);
     const root = new THREE.Group(), body = new THREE.Group(); body.position.y = 0.15; root.add(body);
     const add = (geo, m, x, y) => { const p = new THREE.Mesh(geo, m); p.position.set(x, y, 0); body.add(p); };
     add(new THREE.CylinderGeometry(0.19, 0.17, 0.5, 14), top, 0, 0.24); add(new THREE.CylinderGeometry(0.17, 0.17, 0.2, 14), leg, 0, -0.1);
-    kidHead(body, 0.74, g, o.hat);
+    const head = kidHead(body, 0.74, g, o.hat);
     const arms = [1, -1].map(sd => { const a = limb(0.055, 0.5, skin); a.position.set(0, 0.46, sd * 0.24); const sl = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.07, 0.2, 10), top); sl.position.y = -0.08; a.add(sl); body.add(a); return a; });
     [1, -1].forEach(sd => {
       const h = limb(0.085, 0.42, leg); h.position.set(0, -0.2, sd * 0.09); const knee = limb(0.075, 0.42, leg); knee.position.y = -0.42;
       const f = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.09, 0.12), shoe); f.position.set(0.05, -0.44, 0); knee.add(f);
       const so = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.03, 0.125), white); so.position.set(0.05, -0.495, 0); knee.add(so); h.add(knee); body.add(h);
     });
-    return { root, arms };
+    return { root, arms, head };
   }
   function dogModel(i) {
-    const g = i ? GHOST : {}, fur = lam(FURS[i % 4], g), dark = lam(0x3A2A1E, g), root = new THREE.Group();
+    const g = i ? GHOST : {}, fur = i ? lam(FURS[i % 4], g) : lm('dog', 'fur', hex(FURS[0])), dark = lam(0x3A2A1E, g), root = new THREE.Group();
     const add = (geo, m, x, y, z, rz) => { const p = new THREE.Mesh(geo, m); p.position.set(x, y, z || 0); if (rz) p.rotation.z = rz; root.add(p); return p; };
     add(new THREE.CylinderGeometry(0.17, 0.17, 0.62, 12), fur, 0, 0, 0, Math.PI / 2);
     add(new THREE.SphereGeometry(0.17, 12, 10), fur, 0.31, 0); add(new THREE.SphereGeometry(0.17, 12, 10), fur, -0.31, 0);
@@ -71,17 +123,24 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
     add(new THREE.BoxGeometry(0.22, 0.11, 0.13), fur, 0.64, 0.15);
     add(new THREE.SphereGeometry(0.04, 8, 8), dark, 0.75, 0.18);
     [1, -1].forEach(s => { add(new THREE.BoxGeometry(0.07, 0.2, 0.1), dark, 0.4, 0.3, s * 0.14, 0.3); add(new THREE.SphereGeometry(0.028, 8, 8), dark, 0.58, 0.27, s * 0.1); });
-    if (!i) add(new THREE.CylinderGeometry(0.185, 0.185, 0.05, 14), tm('accent'), 0.36, 0.08, 0, Math.PI / 2 - 0.4);
+    if (!i) {
+      const collar = lm('dog', 'collar', 'accent');
+      add(new THREE.CylinderGeometry(0.185, 0.185, 0.05, 14), collar, 0.36, 0.08, 0, Math.PI / 2 - 0.4);
+      const hat = add(new THREE.ConeGeometry(0.075, 0.22, 14), collar, 0.44, 0.45, 0, 0.3), pom = new THREE.Mesh(new THREE.SphereGeometry(0.032, 8, 8), lam(0xFAFAF6));
+      pom.position.y = 0.11; hat.add(pom); root.userData.hat = hat;
+    }
     const legs = [[0.27, 0.1], [0.27, -0.1], [-0.27, 0.1], [-0.27, -0.1]].map(([x, z]) => { const l = limb(0.05, 0.34, fur); l.position.set(x, -0.1, z); root.add(l); return l; });
     const tail = limb(0.035, 0.3, fur); tail.position.set(-0.42, 0.08, 0); tail.rotation.z = -2.4; root.add(tail);
     return { root, legs, tail };
   }
   function ragModel(i) {
-    const g = i ? GHOST : {}, skin = lam(KID.skin, g), suit = i ? lam(KID.jeans, g) : tm('accent'), root = new THREE.Group();
+    const g = i ? GHOST : {}, skin = i ? lam(KID.skin, g) : lm('diver', 'skin', hex(KID.skin)), suit = i ? lam(KID.jeans, g) : lm('diver', 'suit', 'accent'), root = new THREE.Group();
+    root.userData.suit = suit;
     const ps = [0, 1, 2, 3].map(() => { const p = new THREE.Group(); root.add(p); return p; });
-    const add = (k, geo, m, x, y, z) => { const q = new THREE.Mesh(geo, m); q.position.set(x, y, z || 0); ps[k].add(q); };
+    const add = (k, geo, m, x, y, z) => { const q = new THREE.Mesh(geo, m); q.position.set(x, y, z || 0); ps[k].add(q); return q; };
     add(0, new THREE.CylinderGeometry(0.16, 0.17, 0.26, 14), suit, 0, -0.3); add(0, new THREE.CylinderGeometry(0.19, 0.16, 0.46, 14), skin, 0, 0.04);
-    kidHead(ps[0], 0.44, g, false);
+    root.userData.head = kidHead(ps[0], 0.44, g, false, { skin, hair: i ? null : lm('diver', 'hair', hex(KID.hair)) });
+    if (!i) { const cap = add(0, new THREE.SphereGeometry(0.257, 20, 10, 0, Math.PI * 2, 0, Math.PI * 0.56), suit, 0, 0.44); cap.rotation.z = 0.35; root.userData.cap = cap; }
     [1, -1].forEach(sd => {
       add(1, new THREE.CylinderGeometry(0.08, 0.07, 0.46, 10), skin, 0, 0, sd * 0.09); add(1, new THREE.CylinderGeometry(0.095, 0.09, 0.2, 10), suit, 0, 0.13, sd * 0.09);
       add(2, new THREE.CylinderGeometry(0.062, 0.052, 0.46, 10), skin, 0, 0, sd * 0.09); add(2, new THREE.BoxGeometry(0.2, 0.06, 0.09), skin, 0.06, -0.25, sd * 0.09);
@@ -144,12 +203,20 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
   games.diver = {
     cam: [3.4, 4.4, 16, 2.6, 2.5, 0],
     prep(s) { s.ev = [{ t: s.E, k: 'land' }]; },
+    // pull the camera back for high boards, high jumps and long flights; ordinary dives keep the original framing
+    frame(s) {
+      const up = Math.max(0, (s.board || 0) - 3, s.m.height - 7), right = Math.max(0, Math.max(s.m.distance, s.px) - 8), f = Math.max(up, right * 0.6);
+      cam.position.set(3.4 + 0.5 * right, 4.4 + 0.75 * up, 16 + 2.1 * f); cam.lookAt(2.6 + 0.5 * right, 2.5 + 0.45 * up, 0);
+    },
+    look(v) {
+      this.act.forEach((d, i) => { const u = d.root.userData; u.head.glasses.visible = v.glasses; if (!i) { u.cap.visible = v.cap; u.head.hair.visible = !v.cap; } });
+    },
     tip(s, t) { const u = t - s.wt; return u < 0 ? -s.amp * Math.sin(Math.PI * t / s.wt) : 0.8 * s.amp * Math.exp(-3 * u) * Math.sin(17 * u); },
     build() {
       const g = this.group = new THREE.Group(), deck = tm('deck');
-      const wm = new THREE.MeshPhongMaterial({ color: 0xffffff, specular: 0xffffff, shininess: 90, transparent: true, opacity: 0.78, depthWrite: false }); tinted.push([wm, 'water']);
-      this.water = new THREE.Mesh(new THREE.PlaneGeometry(16, 10, 56, 34), wm); this.water.rotation.x = -Math.PI / 2; this.water.position.set(6.5, 0, 0); g.add(this.water);
-      blk(g, 16, 0.2, 10, tm('deep'), 6.5, -2.7, 0); blk(g, 8, 2.9, 10, deck, -5.5, -1.2, 0); blk(g, 24, 3.4, 2, deck, 2.5, -0.95, -6);
+      const wm = new THREE.MeshPhongMaterial({ color: 0xffffff, specular: 0xffffff, shininess: 90, transparent: true, opacity: 0.78, depthWrite: false }); looked.push([wm, 'diver', 'pool', 'water']);
+      this.water = new THREE.Mesh(new THREE.PlaneGeometry(30, 10, 104, 34), wm); this.water.rotation.x = -Math.PI / 2; this.water.position.set(13.5, 0, 0); g.add(this.water);
+      blk(g, 30, 0.2, 10, tm('deep'), 13.5, -2.7, 0); blk(g, 8, 2.9, 10, deck, -5.5, -1.2, 0); blk(g, 40, 3.4, 2, deck, 10.5, -0.95, -6);
       this.pillar = blk(g, 0.6, 1, 0.9, deck, -2.6, 1.55, 0);
       this.board = new THREE.Group(); this.board.position.set(-3.05, 2.88, 0); g.add(this.board); blk(this.board, 3.2, 0.08, 1.5, tm('board'), 1.6, 0, 0);
       this.act = Array.from({ length: MAXG }, (_, i) => { const d = ragModel(i); d.root.position.z = i ? ((i * 7) % 20 - 9.5) * 0.06 : 0; g.add(d.root); return d; });
@@ -170,7 +237,7 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
       this.rings.forEach((r, j) => { const tt = t - b.E - j * 0.2; r.visible = tt > 0 && tt < 1.3; if (r.visible) { const sc = 0.35 + tt * (0.9 + b.m.splash * 0.07); r.scale.set(sc, sc, 1); r.position.x = x; r.material.opacity = (1 - tt / 1.3) * 0.95; } });
       const P = this.water.geometry.attributes.position, nowS = now(), age = t - b.E, A = age > 0 ? Math.min(0.45, 0.05 + b.m.splash * 0.008) * Math.exp(-age * 1.5) : 0;
       for (let k = 0; k < P.count; k++) {
-        const px = P.getX(k) + 6.5, py = P.getY(k); let hh = 0.035 * Math.sin(px * 1.3 + nowS * 1.6) + 0.025 * Math.sin(py * 1.9 + nowS * 1.2);
+        const px = P.getX(k) + 13.5, py = P.getY(k); let hh = 0.035 * Math.sin(px * 1.3 + nowS * 1.6) + 0.025 * Math.sin(py * 1.9 + nowS * 1.2);
         if (A) { const d = Math.hypot(px - x, py); if (d < 2.4 * age + 0.6) hh += A * Math.sin(7 * (d - 2.4 * age)) / (1 + d * d * 0.6); }
         P.setZ(k, hh);
       }
@@ -182,6 +249,7 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
       const L = [[-2.2, b.board + 0.1, b.board.toFixed(1) + ' m springboard']];
       if (t < b.E) L.push([b.px + 1.9, b.m.height - 0.1, 'Peak ' + b.m.height.toFixed(1) + ' m']);
       else L.push([b.m.distance, 2.1, 'Splash ' + b.m.splash.toFixed(0) + ' L, entry ' + b.m.entry_angle.toFixed(0) + '° off vertical']);
+      if (b.g && Math.abs(b.g - G) > 0.05) L.push([b.m.distance + 3, 0.6, 'Gravity ' + b.g.toFixed(1) + ' m/s²']);
       return L;
     },
     stat: m => m.splash.toFixed(1) + ' L',
@@ -191,16 +259,24 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
   games.dog = {
     cam: [3.1, 2.3, 12.5, 3.1, 1.8, 0],
     prep(s) { const c = s.tc >= 0; s.ev = [{ t: s.tl, k: 'land' }, c ? { t: s.tc, k: 'catch' } : { t: s.tf, k: 'drop' }]; },
+    // zoom out to keep long, high throws and big jumps in the picture
+    frame(s) {
+      let dy = 0; for (let k = 1; k < s.fr.length; k += 3) dy = Math.max(dy, s.fr[k]);
+      const xmax = Math.max(7.7, fx(s, s.tf) + 1, s.xl + 1.2), ymax = Math.max(5.6, 2.2 + s.fvy * s.fvy / (4 * s.fa), dy + 0.8);
+      const k = Math.max((xmax + 1.5) / 9.2, ymax / 5.6);
+      cam.position.set(-1.5 + 4.6 * k, 2.3 + 2.8 * (k - 1), 12.5 * k); cam.lookAt(-1.5 + 4.6 * k, 1.8 + 2.5 * (k - 1), 0);
+    },
+    look(v) { this.act[0].root.userData.hat.visible = v.hat; },
     build() {
       const g = this.group = new THREE.Group();
-      blk(g, 40, 0.2, 16, tm('grass'), 4, -0.1, 0);
-      const th = person({}); th.root.position.set(-1.1, 0.98, 0); th.arms[0].rotation.z = 1.8; g.add(th.root);
+      blk(g, 120, 0.2, 16, tm('grass'), 20, -0.1, 0);
+      const th = person({ top: lm('dog', 'shirt', hex(KID.tee)) }); th.root.position.set(-1.1, 0.98, 0); th.arms[0].rotation.z = 1.8; g.add(th.root);
       this.act = Array.from({ length: MAXG }, (_, i) => { const d = dogModel(i); d.root.position.z = i ? ((i * 7) % 20 - 9.5) * 0.09 : 0; g.add(d.root); return d; });
       [-0.6, 4.6, 8.4].forEach((x, j) => {
         const tr = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 1.2, 8), tm('board')); tr.position.set(x, 0.6, -5 - j % 2); g.add(tr);
         const top = new THREE.Mesh(new THREE.ConeGeometry(1.1, 2.6, 10), lam(0x3F7F4A)); top.position.set(x, 2.4, -5 - j % 2); g.add(top);
       });
-      this.fris = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.035, 18), tm('accent')); g.add(this.fris);
+      this.fris = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.035, 18), lm('dog', 'frisbee', 'accent')); g.add(this.fris);
     },
     update(sims, t) {
       this.act.forEach((d, i) => {
@@ -235,17 +311,34 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
   games.pizza = {
     cam: [0.9, 6.6, 8.6, 0.7, 1.9, 0],
     prep(s) { s.ev = [{ t: s.E, k: 'end' }]; },
+    // tilt up and back for high ceilings
+    frame(s) { const f = Math.max(0, s.ceil - 4.3); cam.position.set(0.9, 6.6 + 0.9 * f, 8.6 + 1.6 * f); cam.lookAt(0.7, 1.9 + 0.55 * f, 0); },
+    look(v) { this.chef.head.hat.visible = v.hat; Object.entries(this.tops).forEach(([k, grp]) => { grp.visible = k === v.toppings; }); },
+    // topping layers that sit on the main dough and stretch and spin with it
+    toppings(d) {
+      const T = {}, sauce = lam(0xC8432B), mozz = lam(0xFBF6E6), basil = lam(0x3F8F3A), pep = lam(0xA8322A), olive = lam(0x26221F);
+      const disc = (grp, r, h, m, x, z, y) => { const q = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 18), m); q.position.set(x, y, z); grp.add(q); return q; };
+      const ring = (n, rr, ph = 0) => Array.from({ length: n }, (_, k) => [Math.cos(k / n * Math.PI * 2 + ph) * rr, Math.sin(k / n * Math.PI * 2 + ph) * rr]);
+      ['margherita', 'pepperoni', 'olives'].forEach(k => { const grp = T[k] = new THREE.Group(); grp.visible = false; d.add(grp); disc(grp, 0.8, 0.012, sauce, 0, 0, 0.03); });
+      [...ring(5, 0.5), [0, 0]].forEach(([x, z]) => disc(T.margherita, 0.17, 0.014, mozz, x, z, 0.04));
+      ring(5, 0.36, 0.63).forEach(([x, z]) => { disc(T.margherita, 0.075, 0.01, basil, x, z, 0.045).scale.z = 0.55; });
+      [...ring(6, 0.52), ...ring(3, 0.2, 0.5)].forEach(([x, z]) => disc(T.pepperoni, 0.14, 0.016, pep, x, z, 0.042));
+      [...ring(8, 0.55), ...ring(4, 0.25, 0.4)].forEach(([x, z]) => { const o = new THREE.Mesh(new THREE.TorusGeometry(0.055, 0.024, 6, 14), olive); o.rotation.x = Math.PI / 2; o.position.set(x, 0.045, z); T.olives.add(o); });
+      return T;
+    },
     build() {
-      const g = this.group = new THREE.Group(), wall = tm('wall');
-      blk(g, 20, 0.2, 8, tm('board'), 0, -0.1, 0); blk(g, 20, 6, 0.3, wall, 0, 2.4, -3);
+      const g = this.group = new THREE.Group(), wall = lm('pizza', 'wall', 'wall');
+      blk(g, 20, 0.2, 8, tm('board'), 0, -0.1, 0); blk(g, 20, 9, 0.3, wall, 0, 3.9, -3);
       this.ceil = blk(g, 7, 0.12, 5, tm('deck', { transparent: true, opacity: 0.3, depthWrite: false }), 0.6, 3.81, -0.4);
       blk(g, 3.4, 0.9, 0.8, tm('deck'), 0.2, 0.45, -2.2);
-      this.chef = person({ hat: true }); this.chef.root.position.set(0, 0.98, 0); g.add(this.chef.root);
+      const ow = lm('pizza', 'outfit', '#F7F7F2');
+      this.chef = person({ hat: true, top: ow, leg: ow }); this.chef.root.position.set(0, 0.98, 0); g.add(this.chef.root);
       this.act = Array.from({ length: MAXG }, (_, i) => {
         const d = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 0.05, 28), tm('dough', i ? GHOST : {}));
         const bump = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 8), tm('board', i ? GHOST : {})); bump.position.set(0.82, 0.02, 0); d.add(bump);
         const hole = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.07, 16), wall); hole.position.set(0.2, 0, 0.1); d.add(hole); d.hole = hole; g.add(d); return d;
       });
+      this.tops = this.toppings(this.act[0]);
     },
     update(sims, t) {
       this.act.forEach((d, i) => {
@@ -279,11 +372,33 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
     flat: true,
     prep(s) { s.ev = [0, 1, 2, 3, 4].map(j => ({ t: 0.2 + j * 0.5 + 0.33, k: j < 4 ? 'pat' : 'end' })); },
     build() { this.group = new THREE.Group(); this.c = flat.getContext('2d'); },
+    table() {
+      const c = this.c, v = looks.sandwich.table;
+      if (v === 'wood') {
+        c.fillStyle = '#C99A62'; c.fillRect(0, 0, W, H);
+        const n = 6, ph = H / n;
+        for (let k = 0; k < n; k++) {
+          const y = k * ph; c.fillStyle = k % 2 ? 'rgba(120,70,30,0.10)' : 'rgba(255,230,190,0.10)'; c.fillRect(0, y, W, ph);
+          c.strokeStyle = 'rgba(110,62,24,0.22)'; c.lineWidth = 1;
+          for (let j = 1; j < 4; j++) { c.beginPath(); for (let x = 0; x <= W; x += 16) c.lineTo(x, y + j * ph / 4 + 2.5 * Math.sin(x / 70 + k * 3 + j)); c.stroke(); }
+          c.fillStyle = 'rgba(80,44,16,0.45)'; c.fillRect(0, y, W, 1.5);
+        }
+      } else if (v === 'picnic') {
+        const s = Math.max(24, Math.min(W, H) / 9);
+        c.fillStyle = '#FBF7F0'; c.fillRect(0, 0, W, H); c.fillStyle = 'rgba(214,64,58,0.4)';
+        for (let x = 0; x < W; x += s) c.fillRect(x, 0, s / 2, H);
+        for (let y = 0; y < H; y += s) c.fillRect(0, y, W, s / 2);
+      } else { c.fillStyle = '#FEFEFE'; c.fillRect(0, 0, W, H); }
+    },
     piece(j) {
       const c = this.c, blob = (R, amp, n, ph) => { c.beginPath(); for (let k = 0; k <= 48; k++) { const a = k / 48 * Math.PI * 2, r = R * (1 + amp * Math.sin(a * n + ph)); c.lineTo(Math.cos(a) * r, Math.sin(a) * r); } c.closePath(); };
       const out = (fill, stroke) => { c.fillStyle = fill; c.fill(); c.shadowColor = 'transparent'; c.strokeStyle = stroke; c.lineWidth = 0.014; c.lineJoin = 'round'; c.stroke(); };
       if (j === 0) { blob(0.42, 0.07, 9, 0); out('#9BD065', '#3F7D2C'); c.strokeStyle = '#6FB145'; c.lineWidth = 0.012; for (let k = 0; k < 5; k++) { const a = k * 1.26 + 0.3; c.beginPath(); c.moveTo(0, 0); c.lineTo(Math.cos(a) * 0.3, Math.sin(a) * 0.3); c.stroke(); } }
       else if (j === 1) { blob(0.36, 0.05, 3, 1); out('#F4A6AE', '#B4566B'); blob(0.24, 0.05, 3, 1); c.fillStyle = '#F8C3C8'; c.fill(); }
+      else if (j === 2 && looks.sandwich.cheese === 'swiss') {
+        c.beginPath(); c.rect(-0.3, -0.3, 0.6, 0.6); out('#F7E7A6', '#B99A3A'); c.fillStyle = '#E8CF78';
+        [[-0.15, -0.14, 0.07], [0.12, -0.08, 0.05], [0.16, 0.16, 0.08], [-0.1, 0.13, 0.045], [0.02, 0.02, 0.035], [-0.22, 0.02, 0.03]].forEach(h => { c.beginPath(); c.arc(h[0], h[1], h[2], 0, 7); c.fill(); });
+      }
       else if (j === 2) { c.beginPath(); c.rect(-0.3, -0.3, 0.6, 0.6); out('#F8CC4A', '#B5830F'); c.fillStyle = '#E3AC2B'; [[-0.12, -0.1, 0.06], [0.13, 0.05, 0.05], [-0.02, 0.16, 0.04]].forEach(h => { c.beginPath(); c.arc(h[0], h[1], h[2], 0, 7); c.fill(); }); }
       else if (j === 3) {
         [-1, 1].forEach(sg => {
@@ -291,13 +406,16 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
           c.fillStyle = '#FBE3B0'; for (let k = 0; k < 6; k++) { c.beginPath(); c.arc(Math.cos(k * 1.05) * 0.08, Math.sin(k * 1.05) * 0.08, 0.018, 0, 7); c.fill(); } c.restore();
         });
       }
-      else if (breadCut) c.drawImage(breadCut, -0.8945, -0.8813, 1.789, 1.789);
-      else { c.beginPath(); c.rect(-0.5, -0.55, 1, 1.1); out('#F3DDA6', '#7A4A1C'); }
+      else if (breadCut) { if (looks.sandwich.toast) c.filter = TOAST; c.drawImage(breadCut, -0.8945, -0.8813, 1.789, 1.789); c.filter = 'none'; }
+      else { c.beginPath(); c.rect(-0.5, -0.55, 1, 1.1); out(looks.sandwich.toast ? '#D9A35E' : '#F3DDA6', '#7A4A1C'); }
     },
     scene(s, t, cx, cy, S, anim) {
       const c = this.c, U = 0.559 * S, by = cy - 0.0074 * S, d = Math.min(2, window.devicePixelRatio || 1);
       const ox = s.bx * U, oy = s.by * U;
-      if (breadBase) c.drawImage(breadBase, cx - S / 2 + ox, cy - S / 2 + oy, S, S); else { c.fillStyle = '#F3DDA6'; c.fillRect(cx + ox - 0.5 * U, by + oy - 0.55 * U, U, 1.1 * U); }
+      // the photo sits on white: on another table, or toasted, use the cut-out
+      const toast = looks.sandwich.toast, im = (toast || looks.sandwich.table) && breadCut ? breadCut : breadBase;
+      if (im) { if (toast) c.filter = TOAST; c.drawImage(im, cx - S / 2 + ox, cy - S / 2 + oy, S, S); c.filter = 'none'; }
+      else { c.fillStyle = toast ? '#D9A35E' : '#F3DDA6'; c.fillRect(cx + ox - 0.5 * U, by + oy - 0.55 * U, U, 1.1 * U); }
       s.it.forEach((it, j) => {
         const p = anim ? clamp((t - 0.2 - j * 0.5) / 0.33, 0, 1) : 1; if (p <= 0) return;
         const e = 1 - (1 - p) * (1 - p), k = 1 + 0.6 * (1 - e), sh = (0.035 + 0.14 * (1 - e)) * U * d;
@@ -306,7 +424,7 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
       });
     },
     update(sims, t) {
-      const c = this.c; c.fillStyle = '#FEFEFE'; c.fillRect(0, 0, W, H);
+      const c = this.c; this.table();
       const b = sims[0]; this.scene(b, t, W / 2, H / 2 - 8, Math.min(W, H) * 0.9, true);
       c.font = '500 14px Barlow, sans-serif'; c.fillStyle = '#4A3520';
       if (sims[1] && vis(1) && compare) {
@@ -326,6 +444,22 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
   [[-1, 7.6, -9, 1.5], [6, 8.8, -11, 2], [11, 6.9, -9, 1.3], [3, 6.2, -12, 1.1]].forEach(([x, y, z, r]) => {
     [0, 1, 2].forEach(j => { const c = new THREE.Mesh(new THREE.SphereGeometry(r * (j === 1 ? 0.6 : 0.42), 14, 10), tm('panel')); c.position.set(x + (j - 1) * r * 0.62, y + (j === 1 ? r * 0.12 : 0), z); c.scale.y = 0.62; backdrop.add(c); });
   });
+  // night sky: a moon and stars behind the clouds
+  const night = new THREE.Group(); night.visible = false; backdrop.add(night);
+  const moon = new THREE.Mesh(new THREE.SphereGeometry(0.9, 20, 14), new THREE.MeshBasicMaterial({ color: 0xF4F1DE })); moon.position.set(9.5, 9.5, -16); night.add(moon);
+  const sGeo = new THREE.BufferGeometry(), sPos = new Float32Array(160 * 3);
+  for (let k = 0; k < 160; k++) { sPos[k * 3] = -20 + rnd() * 50; sPos[k * 3 + 1] = 3 + rnd() * 18; sPos[k * 3 + 2] = -18; }
+  sGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
+  night.add(new THREE.Points(sGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.09 })));
+  const keyOf = g => Object.keys(games).find(k => games[k] === g);
+  function applyTime() {
+    const t = game && looks[keyOf(game)].time, T = TIMES[t] || TIMES.day;
+    scene.background = new THREE.Color(T.sky || col.sky || '#DDF0F4');
+    sun.color.set(T.sun); sun.intensity = T.si * Math.PI; sun.position.y = T.sy;
+    hemi.color.set(T.hemi); hemi.groundColor.set(T.ground); hemi.intensity = T.hi * Math.PI;
+    night.visible = t === 'night';
+  }
+  Object.entries(games).forEach(([k, g]) => g.look && g.look(looks[k]));
   Object.values(games).forEach(g => g.group.traverse(o => { if (o.isMesh) { o.castShadow = !o.material.transparent; o.receiveShadow = true; } }));
   try {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true, ...gl });
@@ -351,7 +485,7 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
   function readColors() {
     const s = getComputedStyle(document.documentElement);
     ['sky', 'water', 'deep', 'board', 'deck', 'accent', 'ink', 'muted', 'line', 'panel', 'drop', 'grass', 'dough', 'wall'].forEach(n => col[n] = s.getPropertyValue('--' + n).trim());
-    scene.background = new THREE.Color(col.sky); tinted.forEach(([m, t]) => m.color.set(col[t]));
+    tinted.forEach(([m, t]) => m.color.set(col[t])); paintLooks(); applyTime();
   }
   function fit(c) { const r = c.getBoundingClientRect(), d = Math.min(2, window.devicePixelRatio || 1); c.width = Math.round(r.width * d); c.height = Math.round(r.height * d); c.getContext('2d').setTransform(d, 0, 0, d, 0, 0); return r; }
   function resize() {
@@ -368,7 +502,7 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
     pGeo.setDrawRange(0, parts.length); pGeo.attributes.position.needsUpdate = true;
     if (!disp.length) {
       tags.forEach(el => { el.hidden = true; });
-      if (game.flat) { const c = flat.getContext('2d'); c.fillStyle = '#FEFEFE'; c.fillRect(0, 0, W, H); }
+      if (game.flat) game.table();
       else { Object.values(games).forEach(g => { if (g.act) g.act.forEach(a => { (a.root || a).visible = false; }); }); if (renderer) renderer.render(scene, cam); }
       return;
     }
@@ -393,7 +527,7 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
     sound,
     setGame(key) {
       if (game) game.group.visible = false;
-      game = games[key]; game.group.visible = true; backdrop.visible = key !== 'pizza';
+      game = games[key]; game.group.visible = true; backdrop.visible = key !== 'pizza'; applyTime();
       canvas.hidden = !!game.flat; flat.hidden = !game.flat;
       disp = []; parts = []; clock = 0;
       resize();
@@ -407,6 +541,7 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
       disp = list.slice(0, MAXG).map(s => { const c = { ...s }; game.prep(c); return c; });
       disp.hasFirst = !!first;
       clock = 0; parts = [];
+      if (game.frame && disp.length) game.frame(disp[0]);
     },
     clear() { disp = []; parts = []; draw(); },
     // advance playback; returns true once the replay has finished
@@ -417,13 +552,25 @@ export function createStage({ canvas, flat, tags, onNoGL, now = () => performanc
         const step = Math.min(left, 0.03); left -= step; clock += step;
         parts.forEach(p => { p.x += p.vx * step; p.y += p.vy * step; p.z += p.vz * step; p.vy -= G * step; p.life -= step * 1.1; });
         parts = parts.filter(p => p.life > 0 && p.y > -0.1);
-        disp.forEach((s, i) => s.ev.forEach(e => { if (!e.done && clock >= e.t) { e.done = true; if (vis(i)) game.event(s, i, e.k); } }));
+        disp.forEach((s, i) => s.ev.forEach(e => { if (!e.done && clock >= e.t) { e.done = true; if (vis(i)) { game.event(s, i, e.k); if (onEvent) onEvent(s, i, e.k); } } }));
       }
       draw();
       return clock > endTime();
     },
     setShowAll(v) { showAll = v; draw(); },
+    // dress a game's scene; `v` holds LOOKS options, missing ones fall back to their defaults
+    setLook(key, v) {
+      looks[key] = { ...lookDefaults(key), ...v };
+      paintLooks(); if (games[key].look) games[key].look(looks[key]);
+      if (game === games[key]) applyTime();
+      draw();
+    },
     get clock() { return clock; },
+    // colour a ghost's suit (diver only); null restores the default
+    tint(i, color) { const a = games.diver.act[i]; if (a && a.root.userData.suit) a.root.userData.suit.color.set(color ?? KID.jeans); },
+    // a world point in CSS pixels on the stage
+    project(x, y, z = 0) { pv.set(x, y, z).project(cam); return { x: (pv.x + 1) / 2 * W, y: (1 - pv.y) / 2 * H }; },
+    depth(i) { const a = game.act; return a && a[i] ? (a[i].root || a[i]).position.z : 0; },
     setCamera(p, look) { cam.position.set(...p); cam.lookAt(...look); draw(); },
     setCompare(v) { compare = v; draw(); },
     stat(key, m) { return games[key].stat(m); },

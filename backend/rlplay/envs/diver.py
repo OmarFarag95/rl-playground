@@ -49,8 +49,22 @@ class Diver(Env):
     obs_names = ["take-off phase", "board height", "x", "y", "vx", "vy", "sin tilt", "cos tilt",
                  "spin rate", "hip angle", "knee angle", "arm angle", "time"]
     act_names = ["power / hip", "drive / knee", "spin / arms"]
+    settings = [
+        ("board_min", "Lowest board", "The springboard height is drawn between these two each episode, m", 0.5, 10.0, 0.1, 1.0),
+        ("board_max", "Highest board", "Set both to the same value for a fixed board, m", 0.5, 10.0, 0.1, 3.0),
+        ("spring", "Board springiness", "How hard the board throws the diver up, × normal", 0.5, 1.5, 0.05, 1.0),
+        ("gravity", "Gravity", "9.81 on Earth, 3.71 on Mars, 24.8 on Jupiter, m/s²", 3.7, 25.0, 0.01, 9.81),
+    ]
+    setting_presets = [
+        ("Olympic 10 m", {"board_min": 10, "board_max": 10}),
+        ("Kiddie pool", {"board_min": 0.5, "board_max": 1}),
+        ("Trampoline board", {"spring": 1.5}),
+        ("Mars", {"gravity": 3.71}),
+        ("Jupiter", {"gravity": 24.79}),
+    ]
 
     def __init__(self):
+        super().__init__()
         s = self.space = pymunk.Space()
         s.gravity = (0, -9.81)
         s.iterations = 12
@@ -65,7 +79,11 @@ class Diver(Env):
             s.add(j)
 
     def reset(self, rng):
-        self.board = float(rng.uniform(1.0, 3.0))
+        self.board = self.uniform(rng, "board_min", "board_max")
+        self.g = self.cfg["gravity"]
+        self.space.gravity = (0, -self.g)
+        # give slow-motion worlds (low gravity, a springy board, a high board) time to land
+        self.tmax = 6.0 * max(1.0, math.sqrt(9.81 / self.g)) * max(1.0, self.cfg["spring"]) * max(1.0, math.sqrt(self.board / 3))
         self.phase = 0
         self.t = 0.0
         self.k = 0
@@ -98,8 +116,9 @@ class Diver(Env):
     def step(self, a):
         if self.phase == 0:
             g = [u01(x) for x in a]
-            self.amp = 0.1 + 0.2 * g[0]
-            vy, vx, w = 1.5 + 5.5 * g[0], 0.4 + 2.1 * g[1], -5.0 * g[2]
+            spring = self.cfg["spring"]
+            self.amp = (0.1 + 0.2 * g[0]) * spring
+            vy, vx, w = (1.5 + 5.5 * g[0]) * spring, 0.4 + 2.1 * g[1], -5.0 * g[2]
             for i, b in enumerate(self.B):
                 ry = SP[i][3] - CY
                 b.velocity = (vx - w * ry, vy)
@@ -117,8 +136,8 @@ class Diver(Env):
             self._substep()
             if self.entered >= 0:
                 break
-        if self.entered >= 0 or self.t >= 6:
-            while self.t < self.entered + TAIL and self.t < 6.5:
+        if self.entered >= 0 or self.t >= self.tmax:
+            while self.t < self.entered + TAIL and self.t < self.tmax + 0.5:
                 self._substep()
             self._finish()
             return self._obs(), True
@@ -141,7 +160,7 @@ class Diver(Env):
         for i, b in enumerate(B):
             prev_y.append(b.position.y)
             b.torque = torque[i]
-            b.force = (0, SP[i][0] * 9.81 * 0.85) if b.position.y < 0 else (0, 0)
+            b.force = (0, SP[i][0] * self.g * 0.85) if b.position.y < 0 else (0, 0)
         self.space.step(DT)
         self.k += 1
         self.t = self.k * DT
@@ -189,4 +208,4 @@ class Diver(Env):
     def replay(self):
         E = self.entered + WIND_UP
         return {"fr": rounded(self.frames), "board": round(self.board, 3), "wt": WIND_UP, "amp": round(self.amp, 3),
-                "E": round(E, 3), "T": round(E + 1.2, 3), "px": round(self.px, 3)}
+                "E": round(E, 3), "T": round(E + 1.2, 3), "px": round(self.px, 3), "g": round(self.g, 2)}

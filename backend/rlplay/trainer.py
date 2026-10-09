@@ -73,7 +73,7 @@ class Episode:
 
 
 class Trainer:
-    def __init__(self, game, formula, net, algo, hp, seed=None):
+    def __init__(self, game, formula, net, algo, hp, seed=None, settings=None):
         if game not in GAMES:
             raise ValueError(f"Unknown game {game!r}.")
         if algo not in ALGOS:
@@ -95,6 +95,7 @@ class Trainer:
         self.hp = clean_hp(hp, algo)
         self.policy = Policy(self.obs_dim, self.act_dim, self.net["policy"], self.hp["log_std"])
         self.set_formula(formula)
+        self.set_settings(settings)
         self._build_learner()
         self.iteration = 0
         self.episodes = 0
@@ -109,6 +110,12 @@ class Trainer:
         self.reward_fn = compile_formula(src, [v[0] for v in self.Env.vars])
         self.formula = src
         self.rstat = RunningStat()
+
+    def set_settings(self, settings):
+        """Change the scene (board height, gravity, ...). The policy keeps what it has learned."""
+        self.settings = self.Env.clean_settings({**getattr(self, "settings", {}), **(settings or {})})
+        for env in self.envs:
+            env.configure(self.settings)
 
     def set_algo(self, algo, hp):
         """Switch algorithm or settings. The policy keeps what it has learned."""
@@ -137,7 +144,7 @@ class Trainer:
 
     def info(self):
         return {"game": self.game, "formula": self.formula, "net": self.net, "algo": self.algo, "hp": self.hp,
-                "obsDim": self.obs_dim, "actDim": self.act_dim, "seed": self.seed,
+                "settings": self.settings, "obsDim": self.obs_dim, "actDim": self.act_dim, "seed": self.seed,
                 "params": {"policy": param_count(self.policy.mu), "value": param_count(self.value) if self.value else 0},
                 "iteration": self.iteration, "episodes": self.episodes, "history": self.history, "last": self.last_stats}
 
@@ -150,7 +157,9 @@ class Trainer:
         """Play ``n`` episodes in lockstep. ``mus`` gives one network per episode (used by ES).
         ``progress(phase, done, total)`` is called as episodes finish."""
         while len(self.envs) < n:
-            self.envs.append(self.Env())
+            env = self.Env()
+            env.configure(self.settings)
+            self.envs.append(env)
         eps = [Episode() for _ in range(n)]
         obs = []
         for i in range(n):
@@ -368,14 +377,14 @@ class Trainer:
     # ----- checkpoints -----------------------------------------------------
     def state(self):
         return {"game": self.game, "formula": self.formula, "net": self.net, "algo": self.algo, "hp": self.hp,
-                "seed": self.seed, "iteration": self.iteration, "episodes": self.episodes, "steps": self.steps,
+                "settings": self.settings, "seed": self.seed, "iteration": self.iteration, "episodes": self.episodes, "steps": self.steps,
                 "history": self.history, "policy": self.policy.state_dict(),
                 "value": self.value.state_dict() if self.value is not None else None,
                 "rstat": (self.rstat.n, self.rstat.mean, self.rstat.m2)}
 
     @classmethod
     def from_state(cls, st):
-        t = cls(st["game"], st["formula"], st["net"], st["algo"], st["hp"], st["seed"])
+        t = cls(st["game"], st["formula"], st["net"], st["algo"], st["hp"], st["seed"], st.get("settings"))
         t.policy.load_state_dict(st["policy"])
         if t.value is not None and st.get("value") is not None:
             t.value.load_state_dict(st["value"])

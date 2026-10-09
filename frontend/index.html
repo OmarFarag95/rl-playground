@@ -69,6 +69,27 @@
 
       <section class="panel">
         <div class="row head">
+          <h2>Scene</h2>
+          <span class="spacer"></span>
+          <button class="small" id="sceneReset" title="Put the world and the look back to how the game started">Reset scene</button>
+        </div>
+        <div class="scenecols">
+          <div>
+            <h3>World</h3>
+            <p class="hint">Changes the physics. The network keeps what it learned and adapts to the new world.</p>
+            <div class="row" id="worldPresets"></div>
+            <div id="world" class="hp"></div>
+          </div>
+          <div>
+            <h3>Look</h3>
+            <p class="hint">Only changes the picture, never the training.</p>
+            <div id="look" class="hp"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="row head">
           <h2>Network</h2>
           <span class="spacer"></span>
           <span class="hint" id="params"></span>

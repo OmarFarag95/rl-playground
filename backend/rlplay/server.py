@@ -141,7 +141,7 @@ class Session:
         elif kind == "setup":
             self.running = False
             try:
-                trainer = await asyncio.to_thread(Trainer, msg["game"], msg["formula"], msg["net"], msg["algo"], msg.get("hp"), msg.get("seed"))
+                trainer = await asyncio.to_thread(Trainer, msg["game"], msg["formula"], msg["net"], msg["algo"], msg.get("hp"), msg.get("seed"), msg.get("settings"))
             except (ValueError, FormulaError, KeyError) as e:
                 await self.send({"t": "error", "msg": str(e)})
                 return
@@ -161,6 +161,9 @@ class Session:
                 await self.send({"t": "formula", "ok": False, "msg": str(e)})
                 return
             await self.send({"t": "formula", "ok": True, "formula": msg["formula"]})
+        elif kind == "settings":
+            await self.call(self.trainer.set_settings, msg.get("settings"))
+            await self.send({"t": "settings", "game": self.trainer.game, "settings": self.trainer.settings})
         elif kind == "algo":
             try:
                 await self.call(self.trainer.set_algo, msg["algo"], msg.get("hp"))

@@ -23,6 +23,33 @@ class Env:
     presets = []        # [(label, formula)]
     obs_names = []
     act_names = []
+    # Scene settings the user can tune; they change the physics, so the network trains on them.
+    # [(key, label, help, lo, hi, step, default)]
+    settings = []
+    setting_presets = []  # [(label, {key: value})]; unnamed keys go back to their defaults
+
+    def __init__(self):
+        self.cfg = self.clean_settings({})
+
+    def configure(self, settings):
+        """Apply scene settings. They take effect from the next reset()."""
+        self.cfg = self.clean_settings(settings)
+
+    @classmethod
+    def clean_settings(cls, settings):
+        out = {}
+        for key, _, _, lo, hi, _, default in cls.settings:
+            try:
+                v = float((settings or {}).get(key, default))
+            except (TypeError, ValueError):
+                v = default
+            out[key] = clamp(v if math.isfinite(v) else default, lo, hi)
+        return out
+
+    def uniform(self, rng, lo_key, hi_key):
+        """A random draw between two settings, whichever order the user put them in."""
+        a, b = self.cfg[lo_key], self.cfg[hi_key]
+        return float(rng.uniform(min(a, b), max(a, b)))
 
     @property
     def obs_dim(self):
@@ -52,6 +79,8 @@ class Env:
             "key": cls.key, "name": cls.name, "lede": cls.lede, "hint": cls.hint,
             "statLabel": cls.stat_label, "vars": cls.vars, "presets": cls.presets,
             "obs": cls.obs_names, "act": cls.act_names,
+            "settings": [dict(zip(("key", "label", "help", "lo", "hi", "step", "default"), s)) for s in cls.settings],
+            "settingPresets": cls.setting_presets,
         }
 
 
