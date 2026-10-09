@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Splash Lab</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='18' r='11' fill='%233FB1CC'/><circle cx='16' cy='18' r='5' fill='%23D9481F'/></svg>">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="titlebar">
+      <h1>Splash Lab</h1>
+      <span id="conn" class="conn" role="status">Connecting to the trainer…</span>
+    </div>
+    <div class="seg" role="group" aria-label="Game" id="games"></div>
+    <p class="lede" id="lede"></p>
+  </header>
+
+  <div class="grid">
+    <div class="col">
+      <section class="panel">
+        <div id="stageWrap">
+          <canvas id="stage" role="img" aria-label="3D view of the game"></canvas>
+          <canvas id="flat" role="img" aria-label="Top view of the sandwich being made" hidden></canvas>
+          <div class="tag" hidden></div><div class="tag" hidden></div><div class="tag" hidden></div>
+          <div id="caption" class="caption"></div>
+          <p id="nogl" hidden>The 3D view needs WebGL, which this browser has turned off.</p>
+        </div>
+        <div class="row">
+          <button id="train" class="primary">Train</button>
+          <button id="step" title="Run one learning update">Step</button>
+          <button id="reset" title="Throw away what the network learned and start from random weights">Start over</button>
+          <span class="spacer"></span>
+          <div class="seg" role="group" aria-label="Speed">
+            <button data-speed="1" aria-pressed="true">1×</button>
+            <button data-speed="4" aria-pressed="false">4×</button>
+            <button data-speed="20" aria-pressed="false">20×</button>
+          </div>
+        </div>
+        <div class="progress">
+          <div class="row">
+            <label class="inline">Train for <input type="number" id="goal" min="0" step="50" aria-describedby="goalHint"> updates</label>
+            <span class="hint" id="goalHint">0 means no limit</span>
+            <span class="spacer"></span>
+            <span class="hint" id="eta"></span>
+          </div>
+          <div class="bar" id="goalBar" role="progressbar" aria-label="Progress towards the goal" aria-valuemin="0" aria-valuemax="100"><i></i></div>
+          <div class="bar thin" id="updBar" role="progressbar" aria-label="Progress inside the current update" aria-valuemin="0" aria-valuemax="100"><i></i></div>
+          <p class="hint" id="updText">Press Train to start.</p>
+        </div>
+        <div class="row">
+          <div class="seg" role="group" aria-label="What to watch">
+            <button data-view="train" aria-pressed="true" title="Episodes from the latest update, with exploration noise">Training episodes</button>
+            <button data-view="eval" aria-pressed="false" title="Fresh episodes with the noise turned off: what the network has really learned">Test the policy</button>
+          </div>
+          <button id="cmp" aria-pressed="false">Compare with first try</button>
+          <button id="all" aria-pressed="false">Show all</button>
+          <button id="snd" aria-pressed="false">Sound off</button>
+        </div>
+        <div class="key">
+          <span id="sndHint"></span>
+          <span id="firstKey" hidden><i class="dot" style="background:var(--muted)"></i>The ghost is the best try from the first update</span>
+          <span id="ghostKey" hidden><i class="dot" style="background:var(--muted)"></i>Other episodes shown as ghosts</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="row head">
+          <h2>Network</h2>
+          <span class="spacer"></span>
+          <span class="hint" id="params"></span>
+        </div>
+        <canvas id="net" role="img" aria-label="Diagram of the policy network and its weights"></canvas>
+        <div class="key">
+          <span><i class="dot" style="background:var(--accent)"></i>Positive weight</span>
+          <span><i class="dot" style="background:var(--deep)"></i>Negative weight</span>
+          <span>± is the exploration noise on each action</span>
+        </div>
+        <div class="netcols">
+          <div>
+            <h3>Policy (actor)</h3>
+            <p class="hint">Maps what the agent sees to the mean of each action.</p>
+            <div id="polLayers" class="layers"></div>
+            <div class="row">
+              <button class="small" id="polAdd">+ Add layer</button>
+              <span class="spacer"></span>
+              <label class="inline">Init
+                <select id="init"></select>
+              </label>
+            </div>
+            <div class="row" id="netPresets"></div>
+          </div>
+          <div>
+            <h3>Value (critic)</h3>
+            <p class="hint">Guesses the reward from each state. Used by PPO and REINFORCE, not by evolution.</p>
+            <label class="inline"><input type="checkbox" id="valSame" checked> Same layout as the policy</label>
+            <div id="valBox" hidden>
+              <div id="valLayers" class="layers"></div>
+              <button class="small" id="valAdd">+ Add layer</button>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <button id="build" class="primary" disabled>Build this network</button>
+          <span class="hint" id="buildHint">Building a new network starts learning from scratch.</span>
+        </div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="panel">
+        <h2>Reward formula</h2>
+        <div class="formula">
+          <label for="formula">reward =</label>
+          <input id="formula" type="text" spellcheck="false" autocomplete="off">
+          <button id="apply">Apply</button>
+        </div>
+        <p id="err" role="alert"></p>
+        <div class="row" id="presets"></div>
+        <table>
+          <thead><tr><th>Variable</th><th>Meaning</th><th>Best</th><th>Average</th></tr></thead>
+          <tbody id="vars"></tbody>
+        </table>
+        <p class="hint">Use + − * / ^, brackets, and abs, min, max, sqrt, exp, log, tanh, clip(x, lo, hi). The reward arrives once, at the end of each episode. Changing the formula keeps what the network has learned, so you can reshape behaviour while it trains.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Learning algorithm</h2>
+        <div class="seg" role="group" aria-label="Algorithm" id="algos"></div>
+        <p class="hint" id="algoHint"></p>
+        <div id="hp" class="hp"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Scoreboard</h2>
+        <div class="score">
+          <div><span>Updates</span><b id="sIter">0</b></div>
+          <div><span>Episodes</span><b id="sEps">0</b></div>
+          <div><span>Best reward</span><b id="sBest">–</b></div>
+          <div><span id="sStatL">Result</span><b id="sStat">–</b></div>
+        </div>
+        <canvas id="curve" role="img" aria-label="Best and average reward per update"></canvas>
+        <div class="key">
+          <span><i class="dot" style="background:var(--accent)"></i>Best reward</span>
+          <span><i class="dot" style="background:var(--muted)"></i>Average reward</span>
+        </div>
+        <div class="row">
+          <div class="seg" role="group" aria-label="Learning signal" id="sigs">
+            <button data-sig="std" aria-pressed="true">Exploration</button>
+            <button data-sig="pl" aria-pressed="false">Policy loss</button>
+            <button data-sig="vl" aria-pressed="false">Value loss</button>
+            <button data-sig="ent" aria-pressed="false">Entropy</button>
+          </div>
+        </div>
+        <canvas id="sig" role="img" aria-label="Chosen learning signal per update"></canvas>
+        <p class="hint" id="speedNote"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Checkpoints</h2>
+        <p class="hint">Saved to the <code>checkpoints/</code> folder next to the server, with the network, settings and formula.</p>
+        <div class="formula">
+          <input id="ckName" type="text" placeholder="name, e.g. dog-trick-catch" spellcheck="false" autocomplete="off" aria-label="Checkpoint name">
+          <button id="save">Save</button>
+        </div>
+        <div class="formula">
+          <select id="ckList" aria-label="Saved checkpoints"></select>
+          <button id="load">Load</button>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast" role="alert" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
