@@ -50,6 +50,11 @@ The physics is 2D rigid-body simulation with [pymunk](https://www.pymunk.org/) a
 
 ### The walker: long episodes, step rewards and live play
 
+<p align="center">
+  <img src="docs/walker-moonwalk.gif" alt="Walker trained with the Moonwalk reward, walking 16.7 m backwards over rough ground without falling" width="600">
+  <br><em>The Moonwalk preset (<code>-10*distance - 20*fell</code>) after 8 minutes of PPO: 16.7 m backwards in 12 s.</em>
+</p>
+
 The walker is the hard one: hundreds of decisions per episode instead of a handful. Three things make it workable:
 
 - **Step rewards from your formula.** Games marked `dense` report their metrics at every step, and each
