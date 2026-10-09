@@ -31,6 +31,11 @@ fastest on a few threads).
 
 ## The games
 
+<p>
+  <img src="docs/diver.png" alt="Diver: a jointed diver mid-flight above the pool after leaving a 2.1 m springboard" width="49%">
+  <img src="docs/frisbee-dog.png" alt="Frisbee dog: the dog leaps and catches the frisbee at 2.7 m" width="49%">
+</p>
+
 | Game | The network sees | The network decides | Changes every episode (defaults; tune them under Scene) |
 |---|---|---|---|
 | Diver | body pose, spin, height, speed | take-off power, drive and spin, then hips, knees and arms 20× a second | board height 1–3 m |
